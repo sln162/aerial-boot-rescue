@@ -8,11 +8,12 @@ import android.content.Intent;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
+import android.accessibilityservice.AccessibilityService.GlobalAction;
 
 /**
- * 听到极米的桌面选择框（ResolverActivity）出现，不按返回，直接把 Aerial 拉到前台。
- * 先检查 Aerial 进程是否存在：存在就用 REORDER_TO_FRONT 提到前台（不重建），
- * 不存在才新建任务。不读 UI 树、不写任何首选记录。
+ * 听到极米的桌面选择框（ResolverActivity）出现，先按返回关掉它，
+ * 再把 Aerial 带回前台。Aerial 进程还在就用 REORDER_TO_FRONT 直接提上来，
+ * 不在才正常创建。不读 UI 树、不写任何首选记录。
  */
 public class ResolverKillerService extends AccessibilityService {
 
@@ -48,9 +49,11 @@ public class ResolverKillerService extends AccessibilityService {
         if (now - lastHandledMs < DEBOUNCE_MS) return;
         lastHandledMs = now;
 
-        boolean running = isAerialRunning();
-        Log.i(TAG, "resolver appeared, aerial running=" + running);
+        // 第一步：把选择框关掉，别让它占着前台拦焦点
+        performGlobalAction(GLOBAL_ACTION_BACK);
 
+        // 第二步：把 Aerial 带回来
+        boolean running = isAerialRunning();
         Intent i = new Intent();
         i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_ACT));
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -59,7 +62,7 @@ public class ResolverKillerService extends AccessibilityService {
         }
         try {
             startActivity(i);
-            Log.i(TAG, "home brought to front, reorder=" + running);
+            Log.i(TAG, "back + home brought to front, reorder=" + running);
         } catch (Exception e) {
             Log.e(TAG, "startActivity failed", e);
         }
