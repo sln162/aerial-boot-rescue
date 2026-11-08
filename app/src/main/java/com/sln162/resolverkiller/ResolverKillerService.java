@@ -1,36 +1,29 @@
 package com.sln162.resolverkiller;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.ActivityManager;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 
 /**
- * 只做一件事：听到极米的桌面选择框（ResolverActivity）出现，就按返回关掉它，
- * 然后立刻把 Aerial 拉到前台。不读 UI 树、不写任何记录、不影响别的窗口。
- *
- * 适用前提：设备处于“只写 wide、不写 DEFAULT”的桌面状态，
- * 按 Home 键时系统会弹 ResolverActivity。
- *
- * 如果换桌面 App 或换品牌固件，改下面三个常量即可：
- *   TARGET_PKG  —— 弹出选择框的包（极米为 com.xgimi.xgimiframeworkui）
- *   AERIAL_PKG / AERIAL_ACT —— 想拉起的桌面 App 组件
+ * 听到极米的桌面选择框（ResolverActivity）出现，不按返回，直接把 Aerial 拉到前台。
+ * 先检查 Aerial 进程是否存在：存在就用 REORDER_TO_FRONT 提到前台（不重建），
+ * 不存在才新建任务。不读 UI 树、不写任何首选记录。
  */
 public class ResolverKillerService extends AccessibilityService {
 
     private static final String TAG = "ResolverKiller";
 
-    /** 选择框所在包（实测：com.xgimi.xgimiframeworkui/.resolver.ResolverActivity） */
     private static final String TARGET_PKG = "com.xgimi.xgimiframeworkui";
     private static final String TARGET_CLASS_KEY = "ResolverActivity";
 
-    /** Aerial 的入口 */
     private static final String AERIAL_PKG = "app.orchard.tv";
     private static final String AERIAL_ACT = "app.orchard.tv.MainActivity";
 
-    /** 防抖：500ms 内只处理一次，避免重复事件连击 */
     private static final long DEBOUNCE_MS = 500L;
     private long lastHandledMs = 0L;
 
@@ -48,26 +41,43 @@ public class ResolverKillerService extends AccessibilityService {
         CharSequence pkg = event.getPackageName();
         CharSequence cls = event.getClassName();
         if (pkg == null || cls == null) return;
-        if (!pkg.toString().equals(TARGET_PKG)) return;
+        if (!TARGET_PKG.equals(pkg.toString())) return;
         if (!cls.toString().contains(TARGET_CLASS_KEY)) return;
 
         long now = SystemClock.uptimeMillis();
         if (now - lastHandledMs < DEBOUNCE_MS) return;
         lastHandledMs = now;
 
-        Log.i(TAG, "ResolverActivity appeared -> BACK + launch home");
-
-        performGlobalAction(GLOBAL_ACTION_BACK);
+        boolean running = isAerialRunning();
+        Log.i(TAG, "resolver appeared, aerial running=" + running);
 
         Intent i = new Intent();
         i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_ACT));
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (running) {
+            i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        }
         try {
             startActivity(i);
-            Log.i(TAG, "home launch sent");
+            Log.i(TAG, "home brought to front, reorder=" + running);
         } catch (Exception e) {
             Log.e(TAG, "startActivity failed", e);
         }
+    }
+
+    private boolean isAerialRunning() {
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return false;
+            java.util.List<ActivityManager.RunningAppProcessInfo> ps = am.getRunningAppProcesses();
+            if (ps == null) return false;
+            for (ActivityManager.RunningAppProcessInfo p : ps) {
+                if (AERIAL_PKG.equals(p.processName)) return true;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "check running failed", e);
+        }
+        return false;
     }
 
     @Override
