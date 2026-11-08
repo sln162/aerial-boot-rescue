@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.jmk92.resolverkiller'
+    namespace 'com.sln162.resolverkiller'
     compileSdk 28
 
     defaultConfig {
-        applicationId "com.jmk92.resolverkiller"
+        applicationId "com.sln162.resolverkiller"
         minSdk 23
         targetSdk 28
         versionCode 1
