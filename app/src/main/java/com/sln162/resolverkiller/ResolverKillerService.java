@@ -12,9 +12,10 @@ import java.io.FileOutputStream;
  * Resolver Killer
  *
  * 只写 wide（无 DEFAULT）时，HOME 会弹出系统桌面选择框（极米 ResolverActivity）。
- * 本服务在两种时机把 Aerial 桌面拉回：
- *   1. 收到 HOME 按键（onKeyEvent）—— 抢在系统解析流程之前；
- *   2. 收到 ResolverActivity 的窗口变化事件 —— 兜底。
+ * 本服务的做法：在 HOME 按下时自己把 Aerial 拉到前台，并吞掉该按键，
+ * 使系统不再启动桌面解析流程，选择框因而不会出现。
+ *
+ * 兜底：若仍然收到 ResolverActivity 的窗口变化事件，再拉一次 Aerial。
  *
  * 取证日志写在应用私有目录 files/rk.log，可用 adb run-as 读取。
  */
@@ -43,7 +44,8 @@ public class ResolverKillerService extends AccessibilityService {
                 launchAerial();
             }
         }
-        return false;
+        // 吞掉 HOME，避免系统启动桌面解析流程
+        return true;
     }
 
     @Override
