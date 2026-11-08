@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release tag (e.g. v1.0)'
+        description: '版本号'
         required: true
         default: 'v1.0'
 
@@ -33,27 +33,14 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon
 
-      - name: Upload APK artifact
+      - name: Rename APK
+        run: |
+          cd app/build/outputs/apk/debug
+          mv app-debug.apk ResolverKiller-${{ inputs.version }}.apk
+          ls -l
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ResolverKiller-debug
-          path: app/build/outputs/apk/debug/*.apk
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.version }}
-          name: ResolverKiller ${{ inputs.version }}
-          body: |
-            ResolverKiller — 极米固件上只写 wide 时，自动关闭桌面选择框并拉回 Aerial 的无障碍服务。
-
-            适用：极米设备 + Aerial 桌面。不读 UI 树、不写首选记录、不影响 Aerial 自带的守护服务。
-
-            安装：
-            ```
-            adb install -r app-debug.apk
-            adb shell settings put secure enabled_accessibility_services "com.xgimi.duertts/com.xgimi.duertts.MonitorService:app.orchard.tv/app.orchard.tv.guard.HomeGuardService:com.sln162.resolverkiller/com.sln162.resolverkiller.ResolverKillerService"
-            ```
-          files: app/build/outputs/apk/debug/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: ResolverKiller-${{ inputs.version }}
+          path: app/build/outputs/apk/debug/ResolverKiller-*.apk
