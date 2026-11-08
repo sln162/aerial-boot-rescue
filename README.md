@@ -8,6 +8,15 @@
 
 不读 UI 树，不写首选记录，不碰原桌面，不影响 Aerial 自带的守护服务。
 
+## 适用范围
+
+这个 APK 只针对 **极米固件的选择框 + Aerial 桌面** 这一组合：
+
+- 换品牌固件（小米、海信等）：选择框的包名不同，需要改 `ResolverKillerService.java` 里的 `TARGET_PKG`
+- 换桌面 App（不用 Aerial）：需要改 `AERIAL_PKG` / `AERIAL_ACT`
+
+同是极米设备、用 Aerial 桌面的用户，装上就能直接用。
+
 ## 实测确认的现场数据（2026-11-09 只读采集）
 
 - 选择框组件：`com.xgimi.xgimiframeworkui/.resolver.ResolverActivity`
@@ -41,7 +50,7 @@ GitHub Actions 在 push 到 main 后自动构建，产物在 Actions 页面的 `
 
 ```powershell
 adb install -r app-debug.apk
-adb shell settings put secure enabled_accessibility_services "com.xgimi.duertts/com.xgimi.duertts.MonitorService:app.orchard.tv/app.orchard.tv.guard.HomeGuardService:com.jmk92.resolverkiller/com.jmk92.resolverkiller.ResolverKillerService"
+adb shell settings put secure enabled_accessibility_services "com.xgimi.duertts/com.xgimi.duertts.MonitorService:app.orchard.tv/app.orchard.tv.guard.HomeGuardService:com.sln162.resolverkiller/com.sln162.resolverkiller.ResolverKillerService"
 ```
 
 或在 设置 → 无障碍 里打开 “Resolver Killer”。
