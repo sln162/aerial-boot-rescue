@@ -8,7 +8,6 @@ import android.content.Intent;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
-import android.accessibilityservice.AccessibilityService.GlobalAction;
 
 /**
  * 听到极米的桌面选择框（ResolverActivity）出现，先按返回关掉它，
