@@ -2,6 +2,8 @@ package com.sln162.resolverkiller;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Intent;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
 
@@ -11,11 +13,11 @@ import java.io.FileOutputStream;
 /**
  * Resolver Killer
  *
- * 只写 wide（无 DEFAULT）时，HOME 会弹出系统桌面选择框（极米 ResolverActivity）。
- * 本服务的做法：在 HOME 按下时自己把 Aerial 拉到前台，并吞掉该按键，
- * 使系统不再启动桌面解析流程，选择框因而不会出现。
- *
- * 兜底：若仍然收到 ResolverActivity 的窗口变化事件，再拉一次 Aerial。
+ * 只写 wide（无 DEFAULT）时，HOME 会弹出极米 ResolverActivity（桌面选择框）。
+ * 处理方式：
+ *  1) HOME 按下时立刻把 Aerial 拉到前台；
+ *  2) 选择框出现时立刻发 BACK 把它关掉，再拉一次 Aerial。
+ * 这样把"弹框挂着等"的那几秒砍掉，只剩 Aerial 自己重绘的时间。
  *
  * 取证日志写在应用私有目录 files/rk.log，可用 adb run-as 读取。
  */
@@ -26,9 +28,11 @@ public class ResolverKillerService extends AccessibilityService {
     private static final String AERIAL_ACT = "app.orchard.tv.MainActivity";
 
     private static final long COOLDOWN_MS = 300L;
+    private static final long BACK_DELAY_MS = 120L;
 
     private long lastEventLaunch = 0L;
     private long lastKeyLaunch = 0L;
+    private final Handler handler = new Handler(Looper.getMainLooper());
 
     @Override
     protected boolean onKeyEvent(KeyEvent event) {
@@ -44,8 +48,7 @@ public class ResolverKillerService extends AccessibilityService {
                 launchAerial();
             }
         }
-        // 吞掉 HOME，避免系统启动桌面解析流程
-        return true;
+        return false;
     }
 
     @Override
@@ -64,11 +67,25 @@ public class ResolverKillerService extends AccessibilityService {
             return;
         }
         long now = System.currentTimeMillis();
-        if (now - lastEventLaunch > COOLDOWN_MS) {
-            lastEventLaunch = now;
-            trace("ACTION resolver -> launch");
-            launchAerial();
+        if (now - lastEventLaunch <= COOLDOWN_MS) {
+            return;
         }
+        lastEventLaunch = now;
+        trace("ACTION resolver -> back + launch");
+        // 等窗口真正拿到焦点再发返回，否则可能作用到下层应用
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                performGlobalAction(GLOBAL_ACTION_BACK);
+                trace("back sent");
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        launchAerial();
+                    }
+                }, 100L);
+            }
+        }, BACK_DELAY_MS);
     }
 
     private void launchAerial() {
