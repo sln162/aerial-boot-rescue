@@ -2,7 +2,7 @@ package com.sln162.resolverkiller;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Intent;
-import android.util.Log;
+import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
 
 import java.io.File;
@@ -12,34 +12,48 @@ import java.io.FileOutputStream;
  * Resolver Killer
  *
  * 只写 wide（无 DEFAULT）时，HOME 会弹出系统桌面选择框（极米 ResolverActivity）。
- * 本服务监听窗口变化，把 Aerial 桌面拉回。
+ * 本服务在两种时机把 Aerial 桌面拉回：
+ *   1. 收到 HOME 按键（onKeyEvent）—— 抢在系统解析流程之前；
+ *   2. 收到 ResolverActivity 的窗口变化事件 —— 兜底。
  *
- * 本版本带取证日志：
- * /sdcard/Android/data/com.sln162.resolverkiller/files/rk.log
+ * 取证日志写在应用私有目录 files/rk.log，可用 adb run-as 读取。
  */
 public class ResolverKillerService extends AccessibilityService {
-
-    private static final String TAG = "ResolverKiller";
 
     private static final String TARGET_CLASS_KEY = "ResolverActivity";
     private static final String AERIAL_PKG = "app.orchard.tv";
     private static final String AERIAL_ACT = "app.orchard.tv.MainActivity";
 
-    private static final long COOLDOWN_MS = 250L;
+    private static final long COOLDOWN_MS = 300L;
 
-    private long lastActionTime = 0L;
+    private long lastEventLaunch = 0L;
+    private long lastKeyLaunch = 0L;
+
+    @Override
+    protected boolean onKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() != KeyEvent.KEYCODE_HOME) {
+            return false;
+        }
+        trace("key HOME action=" + event.getAction());
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            long now = System.currentTimeMillis();
+            if (now - lastKeyLaunch > COOLDOWN_MS) {
+                lastKeyLaunch = now;
+                trace("ACTION key home -> launch");
+                launchAerial();
+            }
+        }
+        return false;
+    }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null) {
             return;
         }
-        CharSequence pkgCs = event.getPackageName();
         CharSequence clsCs = event.getClassName();
-        String pkg = pkgCs == null ? "?" : pkgCs.toString();
         String cls = clsCs == null ? "?" : clsCs.toString();
-
-        trace("evt type=" + event.getEventType() + " pkg=" + pkg + " cls=" + cls);
+        trace("evt " + event.getEventType() + " " + cls);
 
         if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             return;
@@ -47,15 +61,12 @@ public class ResolverKillerService extends AccessibilityService {
         if (!cls.contains(TARGET_CLASS_KEY)) {
             return;
         }
-
         long now = System.currentTimeMillis();
-        if (now - lastActionTime < COOLDOWN_MS) {
-            trace("skip cooldown");
-            return;
+        if (now - lastEventLaunch > COOLDOWN_MS) {
+            lastEventLaunch = now;
+            trace("ACTION resolver -> launch");
+            launchAerial();
         }
-        lastActionTime = now;
-        trace("ACTION resolver detected, launching aerial");
-        launchAerial();
     }
 
     private void launchAerial() {
@@ -66,18 +77,13 @@ public class ResolverKillerService extends AccessibilityService {
             startActivity(intent);
             trace("start requested");
         } catch (Exception e) {
-            trace("start failed: " + e);
-            Log.e(TAG, "launch aerial failed", e);
+            trace("start failed " + e);
         }
     }
 
     private void trace(String s) {
         try {
-            File dir = getExternalFilesDir(null);
-            if (dir == null) {
-                return;
-            }
-            File f = new File(dir, "rk.log");
+            File f = new File(getFilesDir(), "rk.log");
             if (f.length() > 200000L) {
                 f.delete();
             }
