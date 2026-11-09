@@ -61,7 +61,6 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context ctx, Intent intent) {
         final Context app = ctx.getApplicationContext();
         log(app, "boot received");
-        DeviceOwnerSetup.ensure(app);
         scheduleJob(app);
         int[] delays = {5000, 20000, 60000, 150000};
         final Handler h = new Handler(Looper.getMainLooper());
@@ -69,8 +68,7 @@ public class BootReceiver extends BroadcastReceiver {
             final int d = delays[i];
             h.postDelayed(new Runnable() {
                 @Override public void run() {
-                    DeviceOwnerSetup.ensure(app);
-                    ensure(app, "boot+" + d);
+                                ensure(app, "boot+" + d);
                 }
             }, d);
         }
