@@ -17,6 +17,7 @@ public class ResolverKillerService extends AccessibilityService {
     private static final long COOLDOWN_MS = 300L;
     private static final long BACK_DELAY_MS = 120L;
     private static final long LONG_PRESS_MS = 500L;
+    private static final long LAUNCH_DELAY_MS = 150L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long lastLaunch = 0L;
@@ -35,8 +36,13 @@ public class ResolverKillerService extends AccessibilityService {
             homeDownTime = -1L;
             trace("key HOME up dur=" + dur);
             if (dur < LONG_PRESS_MS) {
-                trace("short press -> launch");
-                launchAerial();
+                trace("short press -> delayed launch");
+                handler.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        trace("delayed launch fire");
+                        launchAerial();
+                    }
+                }, LAUNCH_DELAY_MS);
             } else {
                 trace("long press -> skip");
             }
