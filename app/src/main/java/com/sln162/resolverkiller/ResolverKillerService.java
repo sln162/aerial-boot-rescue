@@ -3,10 +3,14 @@ package com.sln162.resolverkiller;
 import android.accessibilityservice.AccessibilityService;
 import android.content.Intent;
 import android.database.ContentObserver;
+import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.View;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import java.io.File;
 import java.io.FileWriter;
@@ -19,11 +23,15 @@ public class ResolverKillerService extends AccessibilityService {
     private static final long COOLDOWN_MS = 300L;
     private static final long BACK_DELAY_MS = 120L;
     private static final long LONG_PRESS_MS = 500L;
+    private static final long COVER_MS = 1200L;
+    private static final int COVER_COLOR = 0xFF0C0C0C;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long lastLaunch = 0L;
     private long homeDownTime = -1L;
     private boolean longPressHandled = false;
+    private WindowManager wm;
+    private View cover;
 
     private final ContentObserver healObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
         @Override public void onChange(boolean selfChange) {
@@ -41,12 +49,23 @@ public class ResolverKillerService extends AccessibilityService {
         }
     };
 
+    private final Runnable coverOff = new Runnable() {
+        @Override public void run() {
+            hideCover("timeout");
+        }
+    };
+
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
         trace("service connected");
         BootReceiver.ensure(this, "connect");
         BootReceiver.scheduleJob(this);
+        try {
+            wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        } catch (Throwable t) {
+            trace("wm fail " + t);
+        }
         try {
             getContentResolver().registerContentObserver(
                     Settings.Secure.getUriFor("enabled_accessibility_services"), false, healObserver);
@@ -63,6 +82,7 @@ public class ResolverKillerService extends AccessibilityService {
             homeDownTime = event.getEventTime();
             longPressHandled = false;
             trace("key HOME down -> launch now");
+            showCover();
             launchAerial();
             handler.postDelayed(longPressCheck, LONG_PRESS_MS);
             return false;
@@ -102,6 +122,47 @@ public class ResolverKillerService extends AccessibilityService {
         }, BACK_DELAY_MS + 100L);
     }
 
+    private void showCover() {
+        if (cover != null) {
+            handler.removeCallbacks(coverOff);
+            handler.postDelayed(coverOff, COVER_MS);
+            return;
+        }
+        if (wm == null) wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+        try {
+            View v = new View(this);
+            v.setBackgroundColor(COVER_COLOR);
+            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT);
+            lp.gravity = Gravity.TOP | Gravity.LEFT;
+            wm.addView(v, lp);
+            cover = v;
+            trace("cover on");
+        } catch (Throwable t) {
+            cover = null;
+            trace("cover fail " + t);
+        }
+        handler.removeCallbacks(coverOff);
+        handler.postDelayed(coverOff, COVER_MS);
+    }
+
+    private void hideCover(String why) {
+        if (cover == null) return;
+        try {
+            wm.removeView(cover);
+            trace("cover off " + why);
+        } catch (Throwable t) {
+            trace("cover off fail " + t);
+        }
+        cover = null;
+    }
+
     private void launchAerial() {
         long now = System.currentTimeMillis();
         if (now - lastLaunch < COOLDOWN_MS) return;
@@ -119,6 +180,12 @@ public class ResolverKillerService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {}
+
+    @Override
+    public void onDestroy() {
+        hideCover("destroy");
+        super.onDestroy();
+    }
 
     private void trace(String s) {
         try {
