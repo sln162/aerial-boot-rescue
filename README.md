@@ -1,96 +1,63 @@
-# ResolverKiller
+# BootRescue
 
-一个只有无障碍服务、没有界面的极小 APK，给极米 H3S + Aerial 桌面用。
+极米 H3S（Android 9 / pig_chivalrous / m7642）开机黑屏兜底工具。
 
-解决的是按 Home 键的两个毛病：
+## 解决什么问题
 
-1. 在第三方 App 里按 Home，卡五秒才回桌面 —— 现在 1.2–1.5 秒
-2. 桌面自己在前台时按 Home，会闪一下上一个 App 的画面 —— 现在压到一两帧
+Aerial 桌面在某些重启或断电后不会自己回到前台，屏幕停在 FallbackHome 上黑着。原因不在 Aerial 自身，而在系统 HOME 首选记录在开机时的候选集差异（详见 issue #1357 / #1377）。
 
-做法是监听 HOME 键的按下事件，在按下的那一刻就把 Aerial 拉到前台，抢在系统 HOME 解析流程之前。系统随后还是会弹出极米的桌面选择框，服务再按一次返回把它关掉，然后重新拉一次 Aerial。
+Aerial 的 `BootReceiver` 在 `LOCKED_BOOT_COMPLETED` 分支里直接 return，所以在系统停在「用户已启动、BOOT_COMPLETED 迟迟不来」的状态时，它自己不会拉起界面。
 
-不读 UI 树，不写首选记录，不碰原桌面，不影响 Aerial 自带的守护服务。
+这个 apk 只做一件事：收到开机广播后，把 `app.orchard.tv` 拉到前台。
 
-## 实测数据
+## 它不做什么
 
-H3S，真实按键 120 ms，各 5 次取中位：
+- 不写 HOME 首选记录，不动系统状态
+- 只要 `RECEIVE_BOOT_COMPLETED`，不要别的权限
+- 不注册无障碍服务
+- 界面是一个静态页，唯一用途是在 Aerial 里点一次清掉 `stopped` 状态
 
-| 场景 | 无服务 | 有服务 |
-|---|---|---|
-| 桌面按 Home | 798 ms | 1200 ms |
-| 第三方 App 按 Home | 1458 ms | 1149 ms |
-| 长按 Home | 1.2 秒（等抬起才进最近任务） | 0.65 秒（按下 500 ms 就进） |
+## 组件
 
-第三方 App 那 5 秒的成因是：系统把请求交给 HOME 解析流程，最后的兜底是 Aerial 自带的守护服务，它 4.5 秒才动手。
-
-## 时序
-
-| 时刻 | 发生什么 |
+| 组件 | 说明 |
 |---|---|
-| t=0 | 按下 Home，服务立刻发 startActivity |
-| t≈50–90 ms | Aerial 的启动请求已发出 |
-| t≈150 ms | 系统把上一个任务提上来（闪的就是这一下） |
-| t≈250–400 ms | 极米桌面选择框弹出 |
-| t≈400 ms | 服务按返回键关掉选择框 |
-| t≈500 ms | 再拉一次 Aerial |
-| t≈1.2–1.5 s | Aerial 稳定在前台 |
+| `BootRescueReceiver` | `directBootAware=true`，同时收 `LOCKED_BOOT_COMPLETED` 与 `BOOT_COMPLETED` |
+| `MainActivity` | 带 LAUNCHER 图标，只为清 `stopped`；页面显示 uptime 和目标包名 |
 
-拉 Aerial 必须抢在按下后的几十毫秒内发出。挪到抬起时再发（哪怕只延后 150 ms），请求就会被系统的 HOME 解析流程吃掉，退化成 4.5 秒兜底。
+## 判断逻辑
 
-## 保活
+- `SystemClock.elapsedRealtime() > 120000` 直接跳过：离开机太远，不是开机场景
+- 同一进程只做一次（`sDone`）
+- 收到广播后等 1.8 秒，让系统先把 FallbackHome 摆好，再 `startActivity`
+- 目标：先 `getLaunchIntentForPackage("app.orchard.tv")`，取不到就显式 `ComponentName(app.orchard.tv, app.orchard.tv.MainActivity)`
+- flag：`FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_RESET_TASK_IF_NEEDED`
 
-极米语音会周期性把本服务从无障碍列表里剔掉。服务会自己把自己写回去，不需要电脑，也不需要 root。
+## 日志
 
-前提是拿到 `WRITE_SECURE_SETTINGS`：
+写在 device-protected 存储，锁定阶段也能写：
 
-```powershell
-adb shell pm grant com.sln162.resolverkiller android.permission.WRITE_SECURE_SETTINGS
+```
+/data/user_de/0/com.sln162.bootrescue/files/rescue.log
 ```
 
-这个权限在系统里的保护级别必须带 `development`（极米的定义是 `signature|privileged|development`），并且本 APK 是 debuggable，才允许 `pm grant` 授予。标准 AOSP 只有 `signature|privileged`，授不了。
+读取：
 
-三道防线：
+```
+adb shell run-as com.sln162.bootrescue cat /data/user_de/0/com.sln162.bootrescue/files/rescue.log
+```
 
-1. 监听 `enabled_accessibility_services`，被改就立刻写回（实测 2 秒内恢复）
-2. 监听开机广播，开机后 5 / 20 / 60 / 150 秒各查一次
-3. JobScheduler 周期任务，15 分钟一次，`setPersisted(true)` 跨重启保留
-
-15 分钟是 Android 9 允许的最小周期。更短只能用 AlarmManager，而闹钟在待机时会被推迟，反而更不准。一次执行只读一个设置字符串，CPU 几十毫秒。
-
-## 适用范围
-
-这个 APK 只针对 **极米固件的选择框 + Aerial 桌面** 这一组合：
-
-- 换品牌固件（小米、海信等）：选择框的包名不同，需要改 `ResolverKillerService.java` 里的 `TARGET_CLASS`
-- 换桌面 App（不用 Aerial）：需要改 `AERIAL_PKG` / `AERIAL_ACT`
-
-同是极米设备、用 Aerial 桌面的用户，装上就能直接用。
-
-## 实测现场数据
-
-- 选择框组件：`com.xgimi.xgimiframeworkui/.resolver.ResolverActivity`
-- Aerial：`app.orchard.tv/.MainActivity`，`launchMode=singleTask`，`clearTaskOnLaunch`
-- 目标 App 示例：`com.fongmi.android.tv/com.fongmi.android.tv.ui.activity.HomeActivity`
-- 极米语音：`com.xgimi.duertts/com.xgimi.duertts.MonitorService`
-
-## 已知边界
-
-1. 黑屏场景不管（选择框没有焦点窗口时收不到事件），兜底仍是脚本或手动按 Home。
-2. 第三方 app 里“什么都不弹、遥控器无响应”那一种不管。
-3. 需要先手动启用一次无障碍服务，之后靠自愈维持。
-4. 卸载重装会丢掉 `WRITE_SECURE_SETTINGS` 授权，必须重新 `pm grant`。
+日志能区分三种结果：广播没到（无 `onReceive`）、到了但 `startActivity` 抛异常、以及 `startActivity ok` 但屏幕仍黑。
 
 ## 构建
 
-手动触发 Actions（`workflow_dispatch`），填版本号，产物是 `ResolverKiller-<版本>.apk`。
+`.github/workflows/build.yml` 的 `Reset project sources` 步骤用 heredoc 生成全部源码，所以改代码只改这一个 workflow 文件就够了。
 
-## 安装与启用
+Actions → build-apk → Run workflow，跑完在 artifacts 下拿 `BootRescue-<version>.zip`。
 
-```powershell
-adb uninstall com.sln162.resolverkiller
-adb install ResolverKiller-v14.apk
-adb shell settings put secure enabled_accessibility_services "app.orchard.tv/app.orchard.tv.guard.HomeGuardService:com.xgimi.duertts/com.xgimi.duertts.MonitorService:com.sln162.resolverkiller/com.sln162.resolverkiller.ResolverKillerService"
-adb shell pm grant com.sln162.resolverkiller android.permission.WRITE_SECURE_SETTINGS
-```
+## 这是取证工具，不是长期方案
 
-覆盖安装同包名不同签名的包会静默失败，所以必须卸载再装。装完要重新授权，否则自愈失效。
+它要回答的是一个具体问题：**从 `LOCKED_BOOT_COMPLETED` 的广播接收器里发 `startActivity`，能不能真的把界面拉起来。**
+
+`am start` 是 shell 身份（系统级），广播接收器是应用身份，两者路径不同。没有实测过就不能当结论。
+
+这条实测只有给 Aerial 提 PR 才有长期价值：Aerial 内部改一行就能做同样的事，不需要再装一个 app。
