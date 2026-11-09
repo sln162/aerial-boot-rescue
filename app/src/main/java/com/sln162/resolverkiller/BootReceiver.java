@@ -1,6 +1,9 @@
 package com.sln162.resolverkiller;
 
+import android.app.job.JobInfo;
+import android.app.job.JobScheduler;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Handler;
@@ -12,6 +15,7 @@ import java.io.FileWriter;
 public class BootReceiver extends BroadcastReceiver {
 
     private static final String KEY = "enabled_accessibility_services";
+    private static final int JOB_ID = 16201;
 
     public static void ensure(Context ctx, String tag) {
         try {
@@ -19,7 +23,6 @@ public class BootReceiver extends BroadcastReceiver {
             String self = pkg + "/" + ResolverKillerService.class.getName();
             String cur = Settings.Secure.getString(ctx.getContentResolver(), KEY);
             if (cur != null && cur.contains(pkg + "/")) {
-                log(ctx, tag + " present");
                 return;
             }
             String next = (cur == null || cur.trim().length() == 0) ? self : cur + ":" + self;
@@ -27,6 +30,20 @@ public class BootReceiver extends BroadcastReceiver {
             log(ctx, tag + " wrote " + next);
         } catch (Throwable t) {
             log(ctx, tag + " fail " + t);
+        }
+    }
+
+    public static void scheduleJob(Context ctx) {
+        try {
+            JobScheduler js = (JobScheduler) ctx.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+            JobInfo.Builder b = new JobInfo.Builder(JOB_ID,
+                    new ComponentName(ctx, HealJobService.class))
+                    .setPeriodic(15 * 60 * 1000L)
+                    .setPersisted(true);
+            js.schedule(b.build());
+            log(ctx, "job scheduled");
+        } catch (Throwable t) {
+            log(ctx, "job fail " + t);
         }
     }
 
@@ -44,6 +61,7 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context ctx, Intent intent) {
         final Context app = ctx.getApplicationContext();
         log(app, "boot received");
+        scheduleJob(app);
         int[] delays = {5000, 20000, 60000, 150000};
         final Handler h = new Handler(Looper.getMainLooper());
         for (int i = 0; i < delays.length; i++) {
