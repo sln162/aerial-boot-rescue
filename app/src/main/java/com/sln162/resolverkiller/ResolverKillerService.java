@@ -23,12 +23,12 @@ public class ResolverKillerService extends AccessibilityService {
     private long homeDownTime = -1L;
 
     @Override
-    public void onKeyEvent(KeyEvent event) {
-        if (event.getKeyCode() != KeyEvent.KEYCODE_HOME) return;
+    public boolean onKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() != KeyEvent.KEYCODE_HOME) return false;
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             homeDownTime = event.getEventTime();
             trace("key HOME down");
-            return;
+            return false;
         }
         if (event.getAction() == KeyEvent.ACTION_UP) {
             long dur = homeDownTime < 0 ? 0 : event.getEventTime() - homeDownTime;
@@ -41,6 +41,7 @@ public class ResolverKillerService extends AccessibilityService {
                 trace("long press -> skip");
             }
         }
+        return false;
     }
 
     @Override
