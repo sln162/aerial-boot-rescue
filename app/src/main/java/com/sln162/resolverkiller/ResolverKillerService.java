@@ -7,11 +7,15 @@ import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 import java.io.File;
 import java.io.FileWriter;
 
@@ -25,7 +29,6 @@ public class ResolverKillerService extends AccessibilityService {
     private static final long LONG_PRESS_MS = 500L;
     private static final long COVER_MAX_MS = 2500L;
     private static final long COVER_TAIL_MS = 150L;
-    private static final int COVER_COLOR = 0xFF0C0C0C;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long lastLaunch = 0L;
@@ -84,9 +87,8 @@ public class ResolverKillerService extends AccessibilityService {
             homeDownTime = event.getEventTime();
             longPressHandled = false;
             resolverSeen = false;
-            trace("key HOME down -> launch now");
+            trace("key HOME down");
             showCover();
-            launchAerial();
             handler.postDelayed(longPressCheck, LONG_PRESS_MS);
             return false;
         }
@@ -132,6 +134,35 @@ public class ResolverKillerService extends AccessibilityService {
         }, BACK_DELAY_MS + 100L);
     }
 
+    private View buildCover() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setGravity(Gravity.CENTER);
+        root.setBackgroundColor(0xFF121214);
+
+        ProgressBar bar = new ProgressBar(this);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(34), dp(34));
+        bp.bottomMargin = dp(18);
+        bar.setLayoutParams(bp);
+
+        TextView tv = new TextView(this);
+        tv.setText("正在进入桌面");
+        tv.setTextColor(0xFF8C8C93);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        tv.setLetterSpacing(0.08f);
+        tv.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        root.addView(bar);
+        root.addView(tv);
+        return root;
+    }
+
+    private int dp(int v) {
+        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+    }
+
     private void showCover() {
         if (cover != null) {
             handler.removeCallbacks(coverOff);
@@ -140,8 +171,7 @@ public class ResolverKillerService extends AccessibilityService {
         }
         if (wm == null) wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         try {
-            View v = new View(this);
-            v.setBackgroundColor(COVER_COLOR);
+            View v = buildCover();
             WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                     WindowManager.LayoutParams.MATCH_PARENT,
                     WindowManager.LayoutParams.MATCH_PARENT,
