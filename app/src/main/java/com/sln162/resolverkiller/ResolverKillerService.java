@@ -46,6 +46,7 @@ public class ResolverKillerService extends AccessibilityService {
         super.onServiceConnected();
         trace("service connected");
         BootReceiver.ensure(this, "connect");
+        BootReceiver.scheduleJob(this);
         try {
             getContentResolver().registerContentObserver(
                     Settings.Secure.getUriFor("enabled_accessibility_services"), false, healObserver);
