@@ -3,7 +3,9 @@ package com.sln162.resolverkiller;
 import android.accessibilityservice.AccessibilityService;
 import android.content.Intent;
 import android.database.ContentObserver;
+import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.graphics.PorterDuff;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
@@ -87,8 +89,9 @@ public class ResolverKillerService extends AccessibilityService {
             homeDownTime = event.getEventTime();
             longPressHandled = false;
             resolverSeen = false;
-            trace("key HOME down");
+            trace("key HOME down -> launch now");
             showCover();
+            launchAerial();
             handler.postDelayed(longPressCheck, LONG_PRESS_MS);
             return false;
         }
@@ -141,15 +144,18 @@ public class ResolverKillerService extends AccessibilityService {
         root.setBackgroundColor(0xFF121214);
 
         ProgressBar bar = new ProgressBar(this);
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(34), dp(34));
-        bp.bottomMargin = dp(18);
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(46), dp(46));
+        bp.bottomMargin = dp(22);
         bar.setLayoutParams(bp);
+        try {
+            bar.getIndeterminateDrawable().setColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN);
+        } catch (Throwable ignored) {}
 
         TextView tv = new TextView(this);
         tv.setText("正在进入桌面");
-        tv.setTextColor(0xFF8C8C93);
+        tv.setTextColor(0xFF90909A);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        tv.setLetterSpacing(0.08f);
+        tv.setLetterSpacing(0.1f);
         tv.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
