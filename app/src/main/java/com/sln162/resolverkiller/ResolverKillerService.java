@@ -1,26 +1,12 @@
 package com.sln162.resolverkiller;
 
 import android.accessibilityservice.AccessibilityService;
-import android.animation.ValueAnimator;
 import android.content.Intent;
 import android.database.ContentObserver;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.PixelFormat;
-import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import android.util.TypedValue;
-import android.view.Gravity;
-import android.view.KeyEvent;
-import android.view.View;
-import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.animation.LinearInterpolator;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 import java.io.File;
 import java.io.FileWriter;
 
@@ -29,39 +15,16 @@ public class ResolverKillerService extends AccessibilityService {
     private static final String TAG_CLASS = "ResolverActivity";
     private static final String AERIAL_PKG = "app.orchard.tv";
     private static final String AERIAL_ACT = "app.orchard.tv.MainActivity";
-    private static final long COOLDOWN_MS = 300L;
+    private static final long COOLDOWN_MS = 1500L;
     private static final long BACK_DELAY_MS = 120L;
-    private static final long LONG_PRESS_MS = 500L;
-    private static final long COVER_MAX_MS = 3500L;
-    private static final long COVER_TAIL_MS = 150L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private long lastLaunch = 0L;
-    private long homeDownTime = -1L;
-    private boolean longPressHandled = false;
-    private boolean resolverSeen = false;
-    private WindowManager wm;
-    private View cover;
+    private long lastFallback = 0L;
 
     private final ContentObserver healObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
         @Override public void onChange(boolean selfChange) {
             trace("settings changed -> heal");
             BootReceiver.ensure(ResolverKillerService.this, "obs");
-        }
-    };
-
-    private final Runnable longPressCheck = new Runnable() {
-        @Override public void run() {
-            if (homeDownTime < 0) return;
-            longPressHandled = true;
-            trace("long press -> recents");
-            performGlobalAction(GLOBAL_ACTION_RECENTS);
-        }
-    };
-
-    private final Runnable coverOff = new Runnable() {
-        @Override public void run() {
-            hideCover("off");
         }
     };
 
@@ -72,11 +35,6 @@ public class ResolverKillerService extends AccessibilityService {
         BootReceiver.ensure(this, "connect");
         BootReceiver.scheduleJob(this);
         try {
-            wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        } catch (Throwable t) {
-            trace("wm fail " + t);
-        }
-        try {
             getContentResolver().registerContentObserver(
                     Settings.Secure.getUriFor("enabled_accessibility_services"), false, healObserver);
             trace("observer registered");
@@ -86,51 +44,20 @@ public class ResolverKillerService extends AccessibilityService {
     }
 
     @Override
-    public boolean onKeyEvent(KeyEvent event) {
-        if (event.getKeyCode() != KeyEvent.KEYCODE_HOME) return false;
-        if (event.getAction() == KeyEvent.ACTION_DOWN) {
-            homeDownTime = event.getEventTime();
-            longPressHandled = false;
-            resolverSeen = false;
-            trace("key HOME down -> launch now");
-            showCover();
-            launchAerial();
-            handler.postDelayed(longPressCheck, LONG_PRESS_MS);
-            return false;
-        }
-        if (event.getAction() == KeyEvent.ACTION_UP) {
-            long dur = homeDownTime < 0 ? 0 : event.getEventTime() - homeDownTime;
-            homeDownTime = -1L;
-            handler.removeCallbacks(longPressCheck);
-            trace("key HOME up dur=" + dur + (longPressHandled ? " recents=1" : ""));
-            return false;
-        }
-        return false;
-    }
-
-    @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null) return;
         CharSequence clsSeq = event.getClassName();
         String cls = clsSeq == null ? "" : clsSeq.toString();
         trace("evt " + event.getEventType() + " " + cls);
         if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
-        if (cls.contains(AERIAL_ACT) && resolverSeen && cover != null) {
-            handler.removeCallbacks(coverOff);
-            handler.postDelayed(coverOff, COVER_TAIL_MS);
-            trace("aerial back -> cover tail");
-            return;
-        }
         if (!cls.contains(TAG_CLASS)) return;
-        resolverSeen = true;
-        if (longPressHandled) return;
         long now = System.currentTimeMillis();
-        if (now - lastLaunch < COOLDOWN_MS) return;
+        if (now - lastFallback < COOLDOWN_MS) return;
+        lastFallback = now;
         trace("resolver -> back + launch");
         handler.postDelayed(new Runnable() {
             @Override public void run() {
                 performGlobalAction(GLOBAL_ACTION_BACK);
-                trace("back sent");
             }
         }, BACK_DELAY_MS);
         handler.postDelayed(new Runnable() {
@@ -140,118 +67,7 @@ public class ResolverKillerService extends AccessibilityService {
         }, BACK_DELAY_MS + 100L);
     }
 
-    private class Spinner extends View {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF oval = new RectF();
-        private float angle = 0f;
-        private ValueAnimator anim;
-
-        Spinner() {
-            super(ResolverKillerService.this);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(dp(2.5f));
-            paint.setColor(Color.WHITE);
-            anim = ValueAnimator.ofFloat(0f, 360f);
-            anim.setDuration(1100L);
-            anim.setRepeatCount(ValueAnimator.INFINITE);
-            anim.setInterpolator(new LinearInterpolator());
-            anim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
-                @Override public void onAnimationUpdate(ValueAnimator a) {
-                    angle = (float) a.getAnimatedValue();
-                    invalidate();
-                }
-            });
-            anim.start();
-        }
-
-        @Override protected void onDetachedFromWindow() {
-            if (anim != null) anim.cancel();
-            super.onDetachedFromWindow();
-        }
-
-        @Override protected void onDraw(Canvas c) {
-            float pad = paint.getStrokeWidth() / 2f + dp(1f);
-            oval.set(pad, pad, getWidth() - pad, getHeight() - pad);
-            float start = angle;
-            c.drawArc(oval, start, 90f, true, paint);
-            c.drawArc(oval, start + 120f, 90f, true, paint);
-            c.drawArc(oval, start + 240f, 90f, true, paint);
-        }
-    }
-
-    private View buildCover() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setGravity(Gravity.CENTER);
-        root.setBackgroundColor(0xFF121214);
-
-        Spinner sp = new Spinner();
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(44), dp(44));
-        bp.bottomMargin = dp(20);
-        sp.setLayoutParams(bp);
-
-        TextView tv = new TextView(this);
-        tv.setText("正在进入桌面");
-        tv.setTextColor(0xFF90909A);
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        tv.setLetterSpacing(0.1f);
-        tv.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-
-        root.addView(sp);
-        root.addView(tv);
-        return root;
-    }
-
-    private float dp(float v) {
-        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
-    }
-
-    private void showCover() {
-        if (cover != null) {
-            handler.removeCallbacks(coverOff);
-            handler.postDelayed(coverOff, COVER_MAX_MS);
-            return;
-        }
-        if (wm == null) wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        try {
-            View v = buildCover();
-            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.MATCH_PARENT,
-                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                            | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                    PixelFormat.TRANSLUCENT);
-            lp.gravity = Gravity.TOP | Gravity.LEFT;
-            wm.addView(v, lp);
-            cover = v;
-            trace("cover on");
-        } catch (Throwable t) {
-            cover = null;
-            trace("cover fail " + t);
-        }
-        handler.removeCallbacks(coverOff);
-        handler.postDelayed(coverOff, COVER_MAX_MS);
-    }
-
-    private void hideCover(String why) {
-        if (cover == null) return;
-        try {
-            wm.removeView(cover);
-            trace("cover off " + why);
-        } catch (Throwable t) {
-            trace("cover off fail " + t);
-        }
-        cover = null;
-    }
-
     private void launchAerial() {
-        long now = System.currentTimeMillis();
-        if (now - lastLaunch < COOLDOWN_MS) return;
-        lastLaunch = now;
         Intent i = new Intent();
         i.setClassName(AERIAL_PKG, AERIAL_ACT);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -266,16 +82,10 @@ public class ResolverKillerService extends AccessibilityService {
     @Override
     public void onInterrupt() {}
 
-    @Override
-    public void onDestroy() {
-        hideCover("destroy");
-        super.onDestroy();
-    }
-
     private void trace(String s) {
         try {
             File f = new File(getFilesDir(), "rk.log");
-            if (f.length() > 200000) f.delete();
+            if (f.length() > 100000) f.delete();
             FileWriter w = new FileWriter(f, true);
             w.write(System.currentTimeMillis() + " " + s + "\n");
             w.close();
