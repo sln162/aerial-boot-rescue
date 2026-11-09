@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.sln162.resolverkiller'
+    namespace 'com.sln162.bootrescue'
     compileSdk 28
 
     defaultConfig {
-        applicationId "com.sln162.resolverkiller"
+        applicationId "com.sln162.bootrescue"
         minSdk 23
         targetSdk 28
         versionCode 1
