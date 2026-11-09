@@ -50,7 +50,7 @@ public class BootReceiver extends BroadcastReceiver {
     private static void log(Context ctx, String s) {
         try {
             File f = new File(ctx.getFilesDir(), "rk.log");
-            if (f.length() > 200000) f.delete();
+            if (f.length() > 100000) f.delete();
             FileWriter w = new FileWriter(f, true);
             w.write(System.currentTimeMillis() + " " + s + "\n");
             w.close();
@@ -61,6 +61,7 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context ctx, Intent intent) {
         final Context app = ctx.getApplicationContext();
         log(app, "boot received");
+        DeviceOwnerSetup.ensure(app);
         scheduleJob(app);
         int[] delays = {5000, 20000, 60000, 150000};
         final Handler h = new Handler(Looper.getMainLooper());
@@ -68,6 +69,7 @@ public class BootReceiver extends BroadcastReceiver {
             final int d = delays[i];
             h.postDelayed(new Runnable() {
                 @Override public void run() {
+                    DeviceOwnerSetup.ensure(app);
                     ensure(app, "boot+" + d);
                 }
             }, d);
