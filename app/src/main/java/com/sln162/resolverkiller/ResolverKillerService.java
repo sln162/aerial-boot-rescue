@@ -23,13 +23,15 @@ public class ResolverKillerService extends AccessibilityService {
     private static final long COOLDOWN_MS = 300L;
     private static final long BACK_DELAY_MS = 120L;
     private static final long LONG_PRESS_MS = 500L;
-    private static final long COVER_MS = 1200L;
+    private static final long COVER_MAX_MS = 2500L;
+    private static final long COVER_TAIL_MS = 150L;
     private static final int COVER_COLOR = 0xFF0C0C0C;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long lastLaunch = 0L;
     private long homeDownTime = -1L;
     private boolean longPressHandled = false;
+    private boolean resolverSeen = false;
     private WindowManager wm;
     private View cover;
 
@@ -51,7 +53,7 @@ public class ResolverKillerService extends AccessibilityService {
 
     private final Runnable coverOff = new Runnable() {
         @Override public void run() {
-            hideCover("timeout");
+            hideCover("off");
         }
     };
 
@@ -81,6 +83,7 @@ public class ResolverKillerService extends AccessibilityService {
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             homeDownTime = event.getEventTime();
             longPressHandled = false;
+            resolverSeen = false;
             trace("key HOME down -> launch now");
             showCover();
             launchAerial();
@@ -104,7 +107,14 @@ public class ResolverKillerService extends AccessibilityService {
         String cls = clsSeq == null ? "" : clsSeq.toString();
         trace("evt " + event.getEventType() + " " + cls);
         if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
+        if (cls.contains(AERIAL_ACT) && resolverSeen && cover != null) {
+            handler.removeCallbacks(coverOff);
+            handler.postDelayed(coverOff, COVER_TAIL_MS);
+            trace("aerial back -> cover tail");
+            return;
+        }
         if (!cls.contains(TAG_CLASS)) return;
+        resolverSeen = true;
         if (longPressHandled) return;
         long now = System.currentTimeMillis();
         if (now - lastLaunch < COOLDOWN_MS) return;
@@ -125,7 +135,7 @@ public class ResolverKillerService extends AccessibilityService {
     private void showCover() {
         if (cover != null) {
             handler.removeCallbacks(coverOff);
-            handler.postDelayed(coverOff, COVER_MS);
+            handler.postDelayed(coverOff, COVER_MAX_MS);
             return;
         }
         if (wm == null) wm = (WindowManager) getSystemService(WINDOW_SERVICE);
@@ -149,7 +159,7 @@ public class ResolverKillerService extends AccessibilityService {
             trace("cover fail " + t);
         }
         handler.removeCallbacks(coverOff);
-        handler.postDelayed(coverOff, COVER_MS);
+        handler.postDelayed(coverOff, COVER_MAX_MS);
     }
 
     private void hideCover(String why) {
