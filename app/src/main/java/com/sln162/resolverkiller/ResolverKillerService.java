@@ -2,8 +2,10 @@ package com.sln162.resolverkiller;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.Intent;
+import android.database.ContentObserver;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
 import java.io.File;
@@ -23,6 +25,13 @@ public class ResolverKillerService extends AccessibilityService {
     private long homeDownTime = -1L;
     private boolean longPressHandled = false;
 
+    private final ContentObserver healObserver = new ContentObserver(new Handler(Looper.getMainLooper())) {
+        @Override public void onChange(boolean selfChange) {
+            trace("settings changed -> heal");
+            BootReceiver.ensure(ResolverKillerService.this, "obs");
+        }
+    };
+
     private final Runnable longPressCheck = new Runnable() {
         @Override public void run() {
             if (homeDownTime < 0) return;
@@ -31,6 +40,20 @@ public class ResolverKillerService extends AccessibilityService {
             performGlobalAction(GLOBAL_ACTION_RECENTS);
         }
     };
+
+    @Override
+    protected void onServiceConnected() {
+        super.onServiceConnected();
+        trace("service connected");
+        BootReceiver.ensure(this, "connect");
+        try {
+            getContentResolver().registerContentObserver(
+                    Settings.Secure.getUriFor("enabled_accessibility_services"), false, healObserver);
+            trace("observer registered");
+        } catch (Throwable t) {
+            trace("observer fail " + t);
+        }
+    }
 
     @Override
     public boolean onKeyEvent(KeyEvent event) {
