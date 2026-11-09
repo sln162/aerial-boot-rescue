@@ -32,6 +32,7 @@ public class ResolverKillerService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         trace("service connected");
+        DeviceOwnerSetup.ensure(this);
         BootReceiver.ensure(this, "connect");
         BootReceiver.scheduleJob(this);
         try {
