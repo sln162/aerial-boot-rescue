@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">ResolverKiller</string>
-    <string name="service_label">Resolver Killer</string>
-    <string name="accessibility_desc">检测极米选择框（ResolverActivity）弹出时自动关闭并拉起 Aerial 桌面</string>
-</resources>
