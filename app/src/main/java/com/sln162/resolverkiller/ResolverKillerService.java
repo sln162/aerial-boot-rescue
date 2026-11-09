@@ -1,11 +1,14 @@
 package com.sln162.resolverkiller;
 
 import android.accessibilityservice.AccessibilityService;
+import android.animation.ValueAnimator;
 import android.content.Intent;
 import android.database.ContentObserver;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
-import android.graphics.PorterDuff;
+import android.graphics.RectF;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
@@ -15,8 +18,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.animation.LinearInterpolator;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.TextView;
 import java.io.File;
 import java.io.FileWriter;
@@ -29,7 +32,7 @@ public class ResolverKillerService extends AccessibilityService {
     private static final long COOLDOWN_MS = 300L;
     private static final long BACK_DELAY_MS = 120L;
     private static final long LONG_PRESS_MS = 500L;
-    private static final long COVER_MAX_MS = 2500L;
+    private static final long COVER_MAX_MS = 3500L;
     private static final long COVER_TAIL_MS = 150L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -137,19 +140,55 @@ public class ResolverKillerService extends AccessibilityService {
         }, BACK_DELAY_MS + 100L);
     }
 
+    private class Spinner extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF oval = new RectF();
+        private float angle = 0f;
+        private ValueAnimator anim;
+
+        Spinner() {
+            super(ResolverKillerService.this);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(dp(2.5f));
+            paint.setColor(Color.WHITE);
+            anim = ValueAnimator.ofFloat(0f, 360f);
+            anim.setDuration(1100L);
+            anim.setRepeatCount(ValueAnimator.INFINITE);
+            anim.setInterpolator(new LinearInterpolator());
+            anim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+                @Override public void onAnimationUpdate(ValueAnimator a) {
+                    angle = (float) a.getAnimatedValue();
+                    invalidate();
+                }
+            });
+            anim.start();
+        }
+
+        @Override protected void onDetachedFromWindow() {
+            if (anim != null) anim.cancel();
+            super.onDetachedFromWindow();
+        }
+
+        @Override protected void onDraw(Canvas c) {
+            float pad = paint.getStrokeWidth() / 2f + dp(1f);
+            oval.set(pad, pad, getWidth() - pad, getHeight() - pad);
+            float start = angle;
+            c.drawArc(oval, start, 90f, true, paint);
+            c.drawArc(oval, start + 120f, 90f, true, paint);
+            c.drawArc(oval, start + 240f, 90f, true, paint);
+        }
+    }
+
     private View buildCover() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.CENTER);
         root.setBackgroundColor(0xFF121214);
 
-        ProgressBar bar = new ProgressBar(this);
-        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(46), dp(46));
-        bp.bottomMargin = dp(22);
-        bar.setLayoutParams(bp);
-        try {
-            bar.getIndeterminateDrawable().setColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN);
-        } catch (Throwable ignored) {}
+        Spinner sp = new Spinner();
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(dp(44), dp(44));
+        bp.bottomMargin = dp(20);
+        sp.setLayoutParams(bp);
 
         TextView tv = new TextView(this);
         tv.setText("正在进入桌面");
@@ -160,13 +199,13 @@ public class ResolverKillerService extends AccessibilityService {
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        root.addView(bar);
+        root.addView(sp);
         root.addView(tv);
         return root;
     }
 
-    private int dp(int v) {
-        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+    private float dp(float v) {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
     }
 
     private void showCover() {
