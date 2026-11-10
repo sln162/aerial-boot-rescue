@@ -161,20 +161,21 @@ public class BootA11yService extends AccessibilityService {
         @Override
         public void run() {
             long now = SystemClock.elapsedRealtime();
+            if (now - startedAt > WINDOW_MS) {
+                log("window closed");
+                return;
+            }
             attempts++;
             String front = frontPackage();
             if (front != null && AERIAL_PKG.equals(front)) {
-                handler.postDelayed(this, CHECK_MS);
+                log("aerial in front, done");
                 return;
             }
-            if (RESOLVER_PKG.equals(front)) {
-                log("front=resolver, pulling aerial (attempt " + attempts + ")");
-                pull();
-            } else if (front == null && now - startedAt <= WINDOW_MS) {
+            if (front != null) {
+                log("front=" + front + ", leave alone");
+            } else {
                 log("no window, pulling aerial (attempt " + attempts + ")");
                 pull();
-            } else {
-                log("front=" + (front == null ? "null" : front) + ", leave alone");
             }
             handler.postDelayed(this, CHECK_MS);
         }
