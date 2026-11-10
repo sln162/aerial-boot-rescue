@@ -22,7 +22,6 @@ import java.util.Locale;
 public class BootA11yService extends AccessibilityService {
     private static final String AERIAL_PKG = "app.orchard.tv";
     private static final String AERIAL_CLS = "app.orchard.tv.MainActivity";
-    private static final String RESOLVER_PKG = "com.xgimi.xgimiframeworkui";
     private static final long WINDOW_MS = 180000L;
     private static final long CHECK_MS = 2000L;
     // 开机动画服务。stopped 说明系统已经把开机画面收掉，该显示界面了，跟过了多少秒无关
@@ -34,7 +33,6 @@ public class BootA11yService extends AccessibilityService {
 
     private Handler handler;
     private long startedAt;
-    private int attempts;
     private ContentObserver observer;
 
     private final Runnable ensureRun = new Runnable() {
@@ -57,7 +55,6 @@ public class BootA11yService extends AccessibilityService {
         super.onServiceConnected();
         handler = new Handler(Looper.getMainLooper());
         startedAt = SystemClock.elapsedRealtime();
-        attempts = 0;
         log("bound, uptime=" + startedAt + "ms");
         ensureSelf(this, true);
         watchSettings();
@@ -159,7 +156,6 @@ public class BootA11yService extends AccessibilityService {
         }
     }
 
-    private int nullStreak = 0;
     // Aerial 只要到过一次前台，就说明桌面自己能起来，这次开机不用管了
     private boolean everSawAerial = false;
     // 开机动画结束之后，连续几次看到"该有画面却是空的"
@@ -178,7 +174,6 @@ public class BootA11yService extends AccessibilityService {
                 log("uptime " + now + " too long, stand down");
                 return;
             }
-            attempts++;
             String front = frontPackage();
             if (front != null && AERIAL_PKG.equals(front)) {
                 everSawAerial = true;
@@ -199,12 +194,6 @@ public class BootA11yService extends AccessibilityService {
             if (!stuck) {
                 stall = 0;
                 log("boot finished, front=" + front + ", leave alone");
-                handler.postDelayed(this, CHECK_MS);
-                return;
-            }
-            if (hasAnyWindow()) {
-                stall = 0;
-                log("boot finished, front=" + front + " but window list not empty, keep waiting");
                 handler.postDelayed(this, CHECK_MS);
                 return;
             }
@@ -257,15 +246,6 @@ public class BootA11yService extends AccessibilityService {
         } catch (Throwable t) {
             log("frontPackage failed: " + t);
             return null;
-        }
-    }
-
-    private boolean hasAnyWindow() {
-        try {
-            java.util.List<android.view.accessibility.AccessibilityWindowInfo> ws = getWindows();
-            return ws != null && !ws.isEmpty();
-        } catch (Throwable t) {
-            return false;
         }
     }
 

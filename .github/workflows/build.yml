@@ -17,16 +17,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Patch rescue check
-        run: |
-          set -e
-          sed -i '/if (hasAnyWindow()) {/,+5d' app/src/main/java/com/sln162/bootrescue/BootA11yService.java
-          sed -i 's/versionCode 18/versionCode 19/; s/versionName "1.3.2"/versionName "1.3.3"/' app/build.gradle
-          sed -i 's/极米防黑屏 1.3.2/极米防黑屏 1.3.3/' app/src/main/java/com/sln162/bootrescue/MainActivity.java
-          echo "--- hasAnyWindow call left:"
-          grep -n 'hasAnyWindow() {' app/src/main/java/com/sln162/bootrescue/BootA11yService.java || true
-          echo "--- version:"
-          grep -n 'versionCode\|versionName' app/build.gradle
       - name: Install platform and build-tools
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-28" "build-tools;28.0.3"
