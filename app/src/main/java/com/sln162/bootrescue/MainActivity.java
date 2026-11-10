@@ -59,14 +59,15 @@ public class MainActivity extends Activity {
         title.setGravity(Gravity.CENTER);
         root.addView(title);
 
-        TextView sub = new TextView(this);
+        final TextView sub = new TextView(this);
         if (bootTip) {
-            sub.setText("马上带你回桌面");
+            sub.setText("6 秒后自动回桌面");
         } else {
             sub.setText(on ? "电视黑屏时，它会自己把桌面拉回来" : "请到 系统设置 → 无障碍 → BootRescue → 启用");
         }
         sub.setTextColor(Color.parseColor("#8AA396"));
-        sub.setTextSize(17);
+        sub.setTextSize(bootTip ? 22 : 17);
+        sub.setTypeface(null, bootTip ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
         sub.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -85,8 +86,7 @@ public class MainActivity extends Activity {
 
         TextView tips = new TextView(this);
         if (bootTip) {
-            tips.setText("按一下「返回」立刻回去\n"
-                    + "不按也没关系，几秒后自己回去\n\n"
+            tips.setText("按一下「返回」立刻回去\n\n"
                     + "（别按主页键，会弹框）");
         } else {
             tips.setText("如果电视黑屏\n"
@@ -115,14 +115,23 @@ public class MainActivity extends Activity {
 
         setContentView(root);
 
-        // 不按键也能自己回去
+        // 倒计时：每秒刷新一次，到 0 自己回桌面
         if (bootTip) {
-            new android.os.Handler(getMainLooper()).postDelayed(new Runnable() {
+            final int[] left = {6};
+            final android.os.Handler h = new android.os.Handler(getMainLooper());
+            final Runnable r = new Runnable() {
                 @Override
                 public void run() {
-                    goBackToAerial();
+                    left[0]--;
+                    if (left[0] <= 0) {
+                        goBackToAerial();
+                        return;
+                    }
+                    sub.setText(left[0] + " 秒后自动回桌面");
+                    h.postDelayed(this, 1000);
                 }
-            }, 6000);
+            };
+            h.postDelayed(r, 1000);
         }
     }
 
