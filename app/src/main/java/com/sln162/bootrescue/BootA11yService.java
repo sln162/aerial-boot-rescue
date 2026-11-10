@@ -1,4 +1,4 @@
- package com.sln162.bootrescue;
+package com.sln162.bootrescue;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.ComponentName;
@@ -25,8 +25,9 @@ public class BootA11yService extends AccessibilityService {
     private static final String RESOLVER_PKG = "com.xgimi.xgimiframeworkui";
     private static final long WINDOW_MS = 180000L;
     private static final long CHECK_MS = 2000L;
-    // 连续多少次（每次 2 秒）确认没有任何窗口，才认定真黑屏。开机前期本来就没窗口，给足时间
-    private static final int NULL_LIMIT = 10;
+    // 从开机算起的保护期。这段时间内不管有没有窗口都不动手，留给桌面自己起来。
+    // 判据不是"过了多少秒"，而是"Aerial 从头到尾没到过前台"，所以机器开机慢也不会被误判
+    private static final long BOOT_GRACE_MS = 40000L;
     private static final long ENSURE_DEBOUNCE_MS = 30000L;
 
     private static long LAST_ENSURE = 0L;
@@ -160,8 +161,8 @@ public class BootA11yService extends AccessibilityService {
     }
 
     private int nullStreak = 0;
-    // 只要见过一次真实窗口，就说明画面已经活了，之后再见到 null 都是正常切换，绝不再拉 Aerial
-    private boolean everSawWindow = false;
+    // Aerial 只要到过一次前台，就说明桌面自己能起来，这次开机不用管了
+    private boolean everSawAerial = false;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -179,31 +180,40 @@ public class BootA11yService extends AccessibilityService {
             attempts++;
             String front = frontPackage();
             if (front != null && AERIAL_PKG.equals(front)) {
+                everSawAerial = true;
                 log("aerial in front, done");
                 return;
             }
-            if (front != null) {
-                everSawWindow = true;
-                nullStreak = 0;
-                log("front=" + front + ", leave alone");
-            } else {
-                nullStreak++;
-                log("no window (" + nullStreak + "/" + NULL_LIMIT + "), everSaw=" + everSawWindow);
-                // 从来没见到任何窗口才算真黑屏；而且要连够次数，并确认系统真的一扇窗都没有
-                if (!everSawWindow && nullStreak >= NULL_LIMIT) {
-                    if (hasAnyWindow()) {
-                        log("window list not empty, keep waiting");
-                        nullStreak = 0;
-                    } else {
-                        log("no window " + NULL_LIMIT + " times, pulling aerial");
-                        pull();
-                        return;
-                    }
-                }
+            if (everSawAerial) {
+                return;
             }
+            // 开机保护期内一律不动
+            if (now < BOOT_GRACE_MS) {
+                log("boot grace " + now + "ms, front=" + front);
+                handler.postDelayed(this, CHECK_MS);
+                return;
+            }
+            // 保护期过了，Aerial 还是没到过前台。只有前台是空的、或者停在 FallbackHome / 选择框，
+            // 才认为真的卡住了；前台是别的 App 说明用户在看东西，不碰
+            boolean stuck = front == null || isFallbackOrResolver(front);
+            if (stuck) {
+                if (hasAnyWindow()) {
+                    log("front=" + front + " but window list not empty, keep waiting");
+                    handler.postDelayed(this, CHECK_MS);
+                    return;
+                }
+                log("grace over, aerial never in front (front=" + front + "), pulling aerial");
+                pull();
+                return;
+            }
+            log("front=" + front + ", leave alone");
             handler.postDelayed(this, CHECK_MS);
         }
     };
+
+    private boolean isFallbackOrResolver(String front) {
+        return front.contains("newsettings") || front.contains("Resolver");
+    }
 
     private String frontPackage() {
         try {
