@@ -91,6 +91,21 @@ adb shell dumpsys package com.sln162.bootrescue | grep -A2 WRITE_SECURE_SETTINGS
 - **不冻结、不禁用极米自带的桌面**。只把 Aerial 拉起来，不动任何系统组件
 - **不动其他应用**，只针对 `app.orchard.tv`
 
+## 想按主页键也不弹框（可选）
+
+只装这个 APK，开机不会再黑；但记录坏掉的状态下按主页键还是会弹一次选择框、等几秒才回来。想连这个也没有，得写双 home：两条 HOME 首选记录，一条覆盖开机用的宽查询（`MAIN+HOME`），一条覆盖按主页键用的标准查询（`MAIN+HOME+DEFAULT`）。
+
+仓库里带了脚本 `tools/fix-aerial-home.py`。它默认只检查记录，坏了才重写，全程不切任何界面：
+
+```
+python tools/fix-aerial-home.py            # 检查，坏了就修
+python tools/fix-aerial-home.py --rescue   # 黑屏救援：修完再把 Aerial 拉到前台
+```
+
+**只建议 H3S / 同代极米（Android 9 / m7642）用。** 脚本里的候选组件是 H3S 的路径（`com.xgimi.home`、`com.android.newsettings`），写入用的 Binder 事务号 70 / 71 也是这台固件上的。换机型、换固件，事务号可能就变了，写进去是一条对不上的记录。其它机型别跑。
+
+**跑之前先确认 adb 能连上这台机器。** 双 home 被固件作废之后的表现就是黑屏，恢复要靠 adb 重写记录或者 `am start` 拉起桌面；连不上就只能等它自己缓过来。
+
 ## 局限
 
 - 黑屏后要等「开机流程走完 + 连续两次读数」，实测白屏认证通过后大约 10 秒左右恢复，这个时间跟机器快慢有关
