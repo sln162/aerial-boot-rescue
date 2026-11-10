@@ -87,7 +87,8 @@ public class MainActivity extends Activity {
         TextView tips = new TextView(this);
         if (bootTip) {
             tips.setText("按一下遥控器「返回」\n就能回到桌面继续看\n\n"
-                    + "如果反复黑屏\n告诉装电视的家人\n让他修一下");
+                    + "这次是它自己把画面拉回来的\n"
+                    + "守护：" + (on ? "正在运行" : "没有启用"));
         } else {
             tips.setText("如果电视黑屏\n"
                     + "遥控器按一次「返回」\n"
@@ -103,7 +104,7 @@ public class MainActivity extends Activity {
 
         // 底部小字
         TextView foot = new TextView(this);
-        foot.setText("BootRescue 2.5  ·  " + (bootTip ? "已自动恢复" : (on ? "守护开启" : "守护关闭")));
+        foot.setText("BootRescue 2.6  ·  " + (bootTip ? "刚自动恢复过" : (on ? "守护开着" : "守护关着")));
         foot.setTextColor(Color.parseColor("#41544B"));
         foot.setTextSize(12);
         foot.setGravity(Gravity.CENTER);
