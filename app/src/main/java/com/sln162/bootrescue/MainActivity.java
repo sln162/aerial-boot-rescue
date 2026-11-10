@@ -84,6 +84,29 @@ public class MainActivity extends Activity {
         lineLp.gravity = Gravity.CENTER_HORIZONTAL;
         root.addView(line, lineLp);
 
+        // 主页规则状态（只在手动打开时显示）
+        if (!bootTip) {
+            String[] rule = homeRule();
+            TextView ruleTitle = new TextView(this);
+            ruleTitle.setText("主页规则：" + rule[0]);
+            ruleTitle.setTextColor(Color.parseColor(rule[2]));
+            ruleTitle.setTextSize(18);
+            ruleTitle.setGravity(Gravity.CENTER);
+            root.addView(ruleTitle);
+
+            TextView ruleSub = new TextView(this);
+            ruleSub.setText(rule[1]);
+            ruleSub.setTextColor(Color.parseColor("#8AA396"));
+            ruleSub.setTextSize(15);
+            ruleSub.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams ruleLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            ruleLp.topMargin = dp(8);
+            ruleLp.bottomMargin = dp(34);
+            ruleLp.gravity = Gravity.CENTER_HORIZONTAL;
+            root.addView(ruleSub, ruleLp);
+        }
+
         TextView tips = new TextView(this);
         if (bootTip) {
             tips.setText("按一下「返回」立刻回去");
@@ -131,6 +154,48 @@ public class MainActivity extends Activity {
             };
             h.postDelayed(r, 1000);
         }
+    }
+
+    // 查两次"系统现在会选谁"：一次按开机的查法，一次按主页键的查法
+    private String[] homeRule() {
+        try {
+            android.content.pm.PackageManager pm = getPackageManager();
+            String boot = resolveHome(pm, false);
+            String home = resolveHome(pm, true);
+            if (boot == null || home == null) {
+                return new String[]{"读不出来", "先不用管它", "#8AA396"};
+            }
+            boolean bootAerial = boot.startsWith("app.orchard.tv");
+            boolean homeAerial = home.startsWith("app.orchard.tv");
+            boolean bootPicker = boot.contains("Resolver");
+            boolean homePicker = home.contains("Resolver");
+
+            if (bootAerial && homeAerial) {
+                return new String[]{"正常", "开机直接进桌面，按主页键也不弹", "#35D08F"};
+            }
+            if (bootAerial && homePicker) {
+                return new String[]{"只有一半", "开机能进桌面，按主页键会弹选择框", "#FFB86B"};
+            }
+            if (bootPicker) {
+                return new String[]{"没设置", "开机会弹选择框，要手动选一下", "#FF6B6B"};
+            }
+            return new String[]{"不太对", "可能进不去桌面，需要处理一下", "#FF6B6B"};
+        } catch (Throwable t) {
+            return new String[]{"读不出来", "先不用管它", "#8AA396"};
+        }
+    }
+
+    private String resolveHome(android.content.pm.PackageManager pm, boolean withDefault) {
+        Intent i = new Intent(Intent.ACTION_MAIN);
+        i.addCategory(Intent.CATEGORY_HOME);
+        if (withDefault) {
+            i.addCategory(Intent.CATEGORY_DEFAULT);
+        }
+        android.content.pm.ResolveInfo ri = pm.resolveActivity(i, 0);
+        if (ri == null || ri.activityInfo == null) {
+            return null;
+        }
+        return ri.activityInfo.packageName + "/" + ri.activityInfo.name;
     }
 
     private void goBackToAerial() {
