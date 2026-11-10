@@ -116,4 +116,22 @@ public class MainActivity extends Activity {
 
         setContentView(root);
     }
+
+    // 按返回直接把 Aerial 拉回来，不要落到开机时那个“打开方式”选择框
+    @Override
+    public void onBackPressed() {
+        if (getIntent() != null && getIntent().getBooleanExtra("boot_tip", false)) {
+            try {
+                Intent i = new Intent();
+                i.setComponent(new android.content.ComponentName(
+                        "app.orchard.tv", "app.orchard.tv.MainActivity"));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                startActivity(i);
+            } catch (Throwable ignored) {
+            }
+            finish();
+            return;
+        }
+        super.onBackPressed();
+    }
 }
