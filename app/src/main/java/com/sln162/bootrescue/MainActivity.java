@@ -124,7 +124,7 @@ public class MainActivity extends Activity {
 
         // 底部小字
         TextView foot = new TextView(this);
-        foot.setText("极米防黑屏 1.3.0  ·  " + (bootTip ? "马上回桌面" : (on ? "开着" : "关着")));
+        foot.setText("极米防黑屏 1.3.1  ·  " + (bootTip ? "马上回桌面" : (on ? "开着" : "关着")));
         foot.setTextColor(Color.parseColor("#7A8F84"));
         foot.setTextSize(14);
         foot.setGravity(Gravity.CENTER);
