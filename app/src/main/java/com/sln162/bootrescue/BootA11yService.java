@@ -25,9 +25,8 @@ public class BootA11yService extends AccessibilityService {
     private static final String RESOLVER_PKG = "com.xgimi.xgimiframeworkui";
     private static final long WINDOW_MS = 180000L;
     private static final long CHECK_MS = 2000L;
-    // 从开机算起的保护期。这段时间内不管有没有窗口都不动手，留给桌面自己起来。
-    // 判据不是"过了多少秒"，而是"Aerial 从头到尾没到过前台"，所以机器开机慢也不会被误判
-    private static final long BOOT_GRACE_MS = 40000L;
+    // 开机动画服务。stopped 说明系统已经把开机画面收掉，该显示界面了，跟过了多少秒无关
+    private static final String BOOTANIM_PROP = "init.svc.bootanim";
     private static final long ENSURE_DEBOUNCE_MS = 30000L;
 
     private static long LAST_ENSURE = 0L;
@@ -163,6 +162,8 @@ public class BootA11yService extends AccessibilityService {
     private int nullStreak = 0;
     // Aerial 只要到过一次前台，就说明桌面自己能起来，这次开机不用管了
     private boolean everSawAerial = false;
+    // 开机动画结束之后，连续几次看到"该有画面却是空的"
+    private int stall = 0;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -187,29 +188,55 @@ public class BootA11yService extends AccessibilityService {
             if (everSawAerial) {
                 return;
             }
-            // 开机保护期内一律不动
-            if (now < BOOT_GRACE_MS) {
-                log("boot grace " + now + "ms, front=" + front);
+            // 系统还在开机（白屏、动画、自检、认证）就不动。这一段多长跟机型快慢有关，不看秒数
+            if (!bootFinished()) {
+                log("still booting (bootanim=" + prop(BOOTANIM_PROP) + "), waiting");
                 handler.postDelayed(this, CHECK_MS);
                 return;
             }
-            // 保护期过了，Aerial 还是没到过前台。只有前台是空的、或者停在 FallbackHome / 选择框，
-            // 才认为真的卡住了；前台是别的 App 说明用户在看东西，不碰
+            // 开机动画已经收掉了，还看不到界面：这种情况才算"该出来没出来"
             boolean stuck = front == null || isFallbackOrResolver(front);
-            if (stuck) {
-                if (hasAnyWindow()) {
-                    log("front=" + front + " but window list not empty, keep waiting");
-                    handler.postDelayed(this, CHECK_MS);
-                    return;
-                }
-                log("grace over, aerial never in front (front=" + front + "), pulling aerial");
+            if (!stuck) {
+                stall = 0;
+                log("boot finished, front=" + front + ", leave alone");
+                handler.postDelayed(this, CHECK_MS);
+                return;
+            }
+            if (hasAnyWindow()) {
+                stall = 0;
+                log("boot finished, front=" + front + " but window list not empty, keep waiting");
+                handler.postDelayed(this, CHECK_MS);
+                return;
+            }
+            stall++;
+            log("boot finished but no usable window (" + stall + "/2, front=" + front + ")");
+            if (stall >= 2) {
+                log("boot finished and still nothing, aerial never in front, pulling aerial");
                 pull();
                 return;
             }
-            log("front=" + front + ", leave alone");
             handler.postDelayed(this, CHECK_MS);
         }
     };
+
+    /** 系统开机流程走完了没有：开机动画收掉，或者系统自己置了 boot_completed。跟时长无关。 */
+    private boolean bootFinished() {
+        if ("stopped".equals(prop(BOOTANIM_PROP))) {
+            return true;
+        }
+        return "1".equals(prop("sys.boot_completed"));
+    }
+
+    private String prop(String key) {
+        try {
+            Class<?> c = Class.forName("android.os.SystemProperties");
+            java.lang.reflect.Method m = c.getMethod("get", String.class);
+            Object v = m.invoke(null, key);
+            return v == null ? "" : v.toString().trim();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
 
     private boolean isFallbackOrResolver(String front) {
         return front.contains("newsettings") || front.contains("Resolver");
