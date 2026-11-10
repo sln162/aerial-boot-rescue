@@ -1,4 +1,4 @@
-package com.sln162.bootrescue;
+ package com.sln162.bootrescue;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.ComponentName;
@@ -25,6 +25,8 @@ public class BootA11yService extends AccessibilityService {
     private static final String RESOLVER_PKG = "com.xgimi.xgimiframeworkui";
     private static final long WINDOW_MS = 180000L;
     private static final long CHECK_MS = 2000L;
+    // 连续多少次（每次 2 秒）确认没有任何窗口，才认定真黑屏。开机前期本来就没窗口，给足时间
+    private static final int NULL_LIMIT = 10;
     private static final long ENSURE_DEBOUNCE_MS = 30000L;
 
     private static long LAST_ENSURE = 0L;
@@ -186,12 +188,17 @@ public class BootA11yService extends AccessibilityService {
                 log("front=" + front + ", leave alone");
             } else {
                 nullStreak++;
-                log("no window (" + nullStreak + "/3), everSaw=" + everSawWindow);
-                // 只有从来没见到任何窗口（真黑屏）才动手，而且要连续 3 次，避开 app 切换那一瞬
-                if (!everSawWindow && nullStreak >= 3) {
-                    log("no window 3 times, pulling aerial");
-                    pull();
-                    return;
+                log("no window (" + nullStreak + "/" + NULL_LIMIT + "), everSaw=" + everSawWindow);
+                // 从来没见到任何窗口才算真黑屏；而且要连够次数，并确认系统真的一扇窗都没有
+                if (!everSawWindow && nullStreak >= NULL_LIMIT) {
+                    if (hasAnyWindow()) {
+                        log("window list not empty, keep waiting");
+                        nullStreak = 0;
+                    } else {
+                        log("no window " + NULL_LIMIT + " times, pulling aerial");
+                        pull();
+                        return;
+                    }
                 }
             }
             handler.postDelayed(this, CHECK_MS);
@@ -213,6 +220,15 @@ public class BootA11yService extends AccessibilityService {
         } catch (Throwable t) {
             log("frontPackage failed: " + t);
             return null;
+        }
+    }
+
+    private boolean hasAnyWindow() {
+        try {
+            java.util.List<android.view.accessibility.AccessibilityWindowInfo> ws = getWindows();
+            return ws != null && !ws.isEmpty();
+        } catch (Throwable t) {
+            return false;
         }
     }
 
