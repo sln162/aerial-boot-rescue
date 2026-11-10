@@ -205,10 +205,28 @@ public class BootA11yService extends AccessibilityService {
             i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_CLS));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             startActivity(i);
+            // 画面救回来之后，弹一次提醒页，让家里人知道刚才黑过屏、按返回就能继续看
+            handler.postDelayed(tipRun, 3000);
         } catch (Throwable t) {
             log("startActivity failed: " + t);
         }
     }
+
+    private final Runnable tipRun = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                Intent i = new Intent();
+                i.setClassName(getPackageName(), "com.sln162.bootrescue.MainActivity");
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                i.putExtra("boot_tip", true);
+                startActivity(i);
+                log("boot tip shown");
+            } catch (Throwable t) {
+                log("tip failed: " + t);
+            }
+        }
+    };
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
