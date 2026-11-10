@@ -157,12 +157,21 @@ public class BootA11yService extends AccessibilityService {
         }
     }
 
+    private int nullStreak = 0;
+    // 只要见过一次真实窗口，就说明画面已经活了，之后再见到 null 都是正常切换，绝不再拉 Aerial
+    private boolean everSawWindow = false;
+
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
             long now = SystemClock.elapsedRealtime();
             if (now - startedAt > WINDOW_MS) {
                 log("window closed");
+                return;
+            }
+            // 只有开机 10 分钟内才救。日常重新启用服务时 uptime 早就超了，一律不动
+            if (now > 600000L) {
+                log("uptime " + now + " too long, stand down");
                 return;
             }
             attempts++;
@@ -172,10 +181,18 @@ public class BootA11yService extends AccessibilityService {
                 return;
             }
             if (front != null) {
+                everSawWindow = true;
+                nullStreak = 0;
                 log("front=" + front + ", leave alone");
             } else {
-                log("no window, pulling aerial (attempt " + attempts + ")");
-                pull();
+                nullStreak++;
+                log("no window (" + nullStreak + "/3), everSaw=" + everSawWindow);
+                // 只有从来没见到任何窗口（真黑屏）才动手，而且要连续 3 次，避开 app 切换那一瞬
+                if (!everSawWindow && nullStreak >= 3) {
+                    log("no window 3 times, pulling aerial");
+                    pull();
+                    return;
+                }
             }
             handler.postDelayed(this, CHECK_MS);
         }
