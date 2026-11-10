@@ -61,7 +61,7 @@ public class MainActivity extends Activity {
 
         TextView sub = new TextView(this);
         if (bootTip) {
-            sub.setText("已经修好了，能接着看");
+            sub.setText("马上带你回桌面");
         } else {
             sub.setText(on ? "电视黑屏时，它会自己把桌面拉回来" : "请到 系统设置 → 无障碍 → BootRescue → 启用");
         }
@@ -85,9 +85,9 @@ public class MainActivity extends Activity {
 
         TextView tips = new TextView(this);
         if (bootTip) {
-            tips.setText("按一下遥控器「返回」\n就直接回到电视桌面\n"
-                    + "（别按主页键，会弹框）\n\n"
-                    + "是这台电视上的 BootRescue\n把刚才黑掉的画面救回来的");
+            tips.setText("按一下「返回」立刻回去\n"
+                    + "不按也没关系，几秒后自己回去\n\n"
+                    + "（别按主页键，会弹框）");
         } else {
             tips.setText("如果电视黑屏\n"
                     + "遥控器按一次「返回」\n"
@@ -103,7 +103,7 @@ public class MainActivity extends Activity {
 
         // 底部小字
         TextView foot = new TextView(this);
-        foot.setText("BootRescue 2.8  ·  " + (bootTip ? "刚把画面救回来" : (on ? "守护开着" : "守护关着")));
+        foot.setText("BootRescue 2.9  ·  " + (bootTip ? "马上回桌面" : (on ? "守护开着" : "守护关着")));
         foot.setTextColor(Color.parseColor("#41544B"));
         foot.setTextSize(12);
         foot.setGravity(Gravity.CENTER);
@@ -114,21 +114,35 @@ public class MainActivity extends Activity {
         root.addView(foot, footLp);
 
         setContentView(root);
+
+        // 不按键也能自己回去
+        if (bootTip) {
+            new android.os.Handler(getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    goBackToAerial();
+                }
+            }, 6000);
+        }
     }
 
-    // 按返回直接把 Aerial 拉回来，不要落到开机时那个“打开方式”选择框
+    private void goBackToAerial() {
+        try {
+            Intent i = new Intent();
+            i.setComponent(new android.content.ComponentName(
+                    "app.orchard.tv", "app.orchard.tv.MainActivity"));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(i);
+        } catch (Throwable ignored) {
+        }
+        finish();
+    }
+
+    // 按返回直接回 Aerial，不要落到开机时那个“打开方式”选择框
     @Override
     public void onBackPressed() {
         if (getIntent() != null && getIntent().getBooleanExtra("boot_tip", false)) {
-            try {
-                Intent i = new Intent();
-                i.setComponent(new android.content.ComponentName(
-                        "app.orchard.tv", "app.orchard.tv.MainActivity"));
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                startActivity(i);
-            } catch (Throwable ignored) {
-            }
-            finish();
+            goBackToAerial();
             return;
         }
         super.onBackPressed();
