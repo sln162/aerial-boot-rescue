@@ -53,7 +53,7 @@ public class MainActivity extends Activity {
         if (bootTip) {
             title.setText("电视刚才黑屏了");
         } else {
-            title.setText(on ? "桌面守护运行中" : "桌面守护未启用");
+            title.setText(on ? "防黑屏开着" : "防黑屏关着");
         }        title.setTextColor(Color.parseColor("#EDF5F0"));
         title.setTextSize(34);
         title.setGravity(Gravity.CENTER);
@@ -63,7 +63,7 @@ public class MainActivity extends Activity {
         if (bootTip) {
             sub.setText("6 秒后自动回桌面");
         } else {
-            sub.setText(on ? "电视黑屏时，它会自己把桌面拉回来" : "请到 系统设置 → 无障碍 → BootRescue → 启用");
+            sub.setText(on ? "电视黑屏的时候，它会自己把桌面拉回来" : "请到「系统设置」里把它打开");
         }
         sub.setTextColor(Color.parseColor("#8AA396"));
         sub.setTextSize(bootTip ? 22 : 17);
@@ -89,11 +89,10 @@ public class MainActivity extends Activity {
             tips.setText("按一下「返回」立刻回去\n\n"
                     + "（别按主页键，会弹框）");
         } else {
-            tips.setText("如果电视黑屏\n"
-                    + "遥控器按一次「返回」\n"
-                    + "等 10 秒，桌面会出来\n\n"
-                    + "如果一直出不来\n"
-                    + "联系装电视的家人，别乱按");
+            tips.setText("平时不用管它\n"
+                    + "电视黑屏的时候\n"
+                    + "它会自己把桌面带回来\n\n"
+                    + "真卡住了，遥控器按一次「返回」也行");
         }
         tips.setTextColor(Color.parseColor("#A9BCB2"));
         tips.setTextSize(17);
@@ -103,7 +102,7 @@ public class MainActivity extends Activity {
 
         // 底部小字
         TextView foot = new TextView(this);
-        foot.setText("BootRescue 2.9  ·  " + (bootTip ? "马上回桌面" : (on ? "守护开着" : "守护关着")));
+        foot.setText("极米防黑屏 1.1.1  ·  " + (bootTip ? "马上回桌面" : (on ? "开着" : "关着")));
         foot.setTextColor(Color.parseColor("#7A8F84"));
         foot.setTextSize(14);
         foot.setGravity(Gravity.CENTER);
