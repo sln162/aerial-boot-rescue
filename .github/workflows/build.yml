@@ -6,7 +6,7 @@ on:
       version:
         description: '版本号'
         required: true
-        default: 'v2.0'
+        default: 'v2.1'
 
 jobs:
   build:
@@ -34,8 +34,8 @@ jobs:
                   applicationId "com.sln162.bootrescue"
                   minSdk 23
                   targetSdk 28
-                  versionCode 2
-                  versionName "2.0"
+                  versionCode 3
+                  versionName "2.1"
               }
 
               buildTypes {
@@ -55,6 +55,9 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+              <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
               <application
                   android:allowBackup="false"
                   android:label="BootRescue">
@@ -71,6 +74,16 @@ jobs:
                           android:name="android.accessibilityservice"
                           android:resource="@xml/a11y_config" />
                   </service>
+
+                  <receiver
+                      android:name=".BootGuardReceiver"
+                      android:directBootAware="true"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED" />
+                          <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                      </intent-filter>
+                  </receiver>
 
                   <activity
                       android:name=".MainActivity"
@@ -100,11 +113,14 @@ jobs:
 
           import android.accessibilityservice.AccessibilityService;
           import android.content.ComponentName;
+          import android.content.ContentResolver;
           import android.content.Context;
           import android.content.Intent;
+          import android.database.ContentObserver;
           import android.os.Handler;
           import android.os.Looper;
           import android.os.SystemClock;
+          import android.provider.Settings;
           import android.view.accessibility.AccessibilityEvent;
           import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -119,10 +135,13 @@ jobs:
               private static final String AERIAL_CLS = "app.orchard.tv.MainActivity";
               private static final long WINDOW_MS = 180000L;
               private static final long CHECK_MS = 2000L;
+              private static final long ENSURE_DEBOUNCE_MS = 30000L;
 
               private Handler handler;
               private long startedAt;
               private int attempts;
+              private long lastEnsure;
+              private ContentObserver observer;
 
               @Override
               protected void onServiceConnected() {
@@ -130,8 +149,91 @@ jobs:
                   handler = new Handler(Looper.getMainLooper());
                   startedAt = SystemClock.elapsedRealtime();
                   attempts = 0;
-                  log("bound, uptime=" + startedAt + "s");
+                  log("bound, uptime=" + startedAt + "ms");
+                  ensureSelf(this, true);
+                  watchSettings();
                   handler.postDelayed(tick, CHECK_MS);
+              }
+
+              private void watchSettings() {
+                  try {
+                      ContentResolver cr = getContentResolver();
+                      observer = new ContentObserver(handler) {
+                          @Override
+                          public void onChange(boolean selfChange) {
+                              log("a11y list changed");
+                              ensureSelf(BootA11yService.this, false);
+                          }
+                      };
+                      cr.registerContentObserver(
+                              Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES),
+                              false, observer);
+                  } catch (Throwable t) {
+                      log("watch failed: " + t);
+                  }
+              }
+
+              private static long LAST_ENSURE = 0L;
+
+              static void ensureSelf(Context context, boolean force) {
+                  long now = SystemClock.elapsedRealtime();
+                  if (!force && LAST_ENSURE != 0L && now - LAST_ENSURE < ENSURE_DEBOUNCE_MS) {
+                      return;
+                  }
+                  LAST_ENSURE = now;
+                  try {
+                      ComponentName me = new ComponentName(context.getPackageName(),
+                              BootA11yService.class.getName());
+                      String flat = me.flattenToString();
+                      String cur = readList(context);
+                      if (cur != null && cur.contains(flat)) {
+                          return;
+                      }
+                      String next = (cur == null || cur.isEmpty()) ? flat : cur + ":" + flat;
+                      if (!writeList(context, next)) {
+                          writeList(context.createDeviceProtectedStorageContext(), next);
+                      }
+                      try {
+                          Settings.Secure.putInt(context.getContentResolver(),
+                                  Settings.Secure.ACCESSIBILITY_ENABLED, 1);
+                      } catch (Throwable ignored) {
+                      }
+                      logLine(context, "restored self into a11y list");
+                  } catch (Throwable t) {
+                      logLine(context, "ensureSelf failed: " + t);
+                  }
+              }
+
+              static String readList(Context context) {
+                  try {
+                      String v = Settings.Secure.getString(context.getContentResolver(),
+                              Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                      if (v != null) {
+                          return v;
+                      }
+                  } catch (Throwable ignored) {
+                  }
+                  try {
+                      String v = Settings.Secure.getString(
+                              context.createDeviceProtectedStorageContext().getContentResolver(),
+                              Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                      if (v != null) {
+                          return v;
+                      }
+                  } catch (Throwable ignored) {
+                  }
+                  return null;
+              }
+
+              static boolean writeList(Context context, String value) {
+                  try {
+                      Settings.Secure.putString(context.getContentResolver(),
+                              Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, value);
+                      return true;
+                  } catch (Throwable t) {
+                      logLine(context, "write failed: " + t);
+                      return false;
+                  }
               }
 
               private final Runnable tick = new Runnable() {
@@ -196,8 +298,12 @@ jobs:
               }
 
               private void log(String msg) {
+                  logLine(this, msg);
+              }
+
+              static void logLine(Context context, String msg) {
                   try {
-                      Context de = createDeviceProtectedStorageContext();
+                      Context de = context.createDeviceProtectedStorageContext();
                       File dir = de.getFilesDir();
                       if (dir == null) {
                           return;
@@ -216,6 +322,22 @@ jobs:
               }
           }
           JAVA
+
+          cat > app/src/main/java/com/sln162/bootrescue/BootGuardReceiver.java <<'RCV'
+          package com.sln162.bootrescue;
+
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+
+          public class BootGuardReceiver extends BroadcastReceiver {
+              @Override
+              public void onReceive(Context context, Intent intent) {
+                  BootA11yService.logLine(context, "boot receiver: " + intent.getAction());
+                  BootA11yService.ensureSelf(context, false);
+              }
+          }
+          RCV
 
           cat > app/src/main/java/com/sln162/bootrescue/MainActivity.java <<'ACT'
           package com.sln162.bootrescue;
@@ -248,11 +370,11 @@ jobs:
                           ViewGroup.LayoutParams.MATCH_PARENT));
 
                   TextView t = new TextView(this);
-                  t.setText("BootRescue 2.0\n\n"
-                          + "无障碍服务：" + (on ? "已启用" : "未启用，请到设置里打开") + "\n"
+                  t.setText("BootRescue 2.1\n\n"
+                          + "无障碍服务：" + (on ? "已启用" : "未启用") + "\n"
                           + "uptime: " + (SystemClock.elapsedRealtime() / 1000) + " s\n"
                           + "target: app.orchard.tv\n\n"
-                          + "开机后若没窗口，自动拉起 Aerial");
+                          + "开机绑定后会补写自己回无障碍列表");
                   t.setTextColor(Color.WHITE);
                   t.setTextSize(20);
                   t.setGravity(Gravity.CENTER);
