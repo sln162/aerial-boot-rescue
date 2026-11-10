@@ -104,12 +104,12 @@ public class MainActivity extends Activity {
         // 底部小字
         TextView foot = new TextView(this);
         foot.setText("BootRescue 2.9  ·  " + (bootTip ? "马上回桌面" : (on ? "守护开着" : "守护关着")));
-        foot.setTextColor(Color.parseColor("#41544B"));
-        foot.setTextSize(12);
+        foot.setTextColor(Color.parseColor("#7A8F84"));
+        foot.setTextSize(14);
         foot.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams footLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        footLp.topMargin = dp(44);
+        footLp.topMargin = dp(30);
         footLp.gravity = Gravity.CENTER_HORIZONTAL;
         root.addView(foot, footLp);
 
