@@ -6,6 +6,8 @@
 
 最新 APK 在 [Releases](https://github.com/sln162/aerial-boot-rescue/releases) 页面下载。
 
+只想装上用，直接跳到 [装法](#装法)；想弄明白它为什么管用，从 [为什么会黑屏](#为什么会黑屏) 往后看。
+
 ## 为什么会黑屏
 
 极米系统查桌面「首选记录」有两套查法：
@@ -38,11 +40,8 @@
 
 ## 装法
 
-1. 从 [Releases](https://github.com/sln162/aerial-boot-rescue/releases) 下载最新 APK，装到电视上
-2. 打开应用一次，页面上会显示防黑屏是「开着」还是「关着」
-3. 关着的话，去系统设置里把这个应用的无障碍开关打开（极米路径一般是 设置 → 辅助功能 → 无障碍）
-
-如果系统设置里找不到入口，用 adb：
+1. 从 [Releases](https://github.com/sln162/aerial-boot-rescue/releases) 下载最新 APK。**先卸载旧的再装新的**，不要覆盖安装：调试签名每次构建可能不同，覆盖会直接失败
+2. 装完立刻用 adb 做这三条：
 
 ```
 pm grant com.sln162.bootrescue android.permission.WRITE_SECURE_SETTINGS
@@ -51,9 +50,23 @@ settings put secure enabled_accessibility_services \
 settings put secure accessibility_enabled 1
 ```
 
-`pm grant` 那条只影响一件事：系统把这个服务从无障碍列表里剔掉时，它自己能不能爬回来。不授予也能用，只是被剔掉后需要手动再开一次。
+3. 打开应用一次，确认「防黑屏」是绿点
 
-**装完先卸载旧的再装新的**，不要覆盖安装：调试签名的 APK 每次构建签名可能不同，覆盖会失败。
+**`pm grant` 不是可选步骤。** 极米在解锁那一刻会重写无障碍列表，把第三方服务整条剔掉（实测只剩 `com.xgimi.duertts/...`）。没这个权限，服务被剔之后写不回去，这一次开机也许还能靠 `pull` 把桌面拉起来，但下一次开机就没人管了，等于装了个一次性的。
+
+如果系统设置里能找到无障碍入口，手动打开也可以，但 `pm grant` 这一步别省。
+
+## 装完怎么确认真的到位
+
+```
+adb shell settings get secure enabled_accessibility_services
+adb shell dumpsys activity services com.sln162.bootrescue | grep hasBound
+adb shell dumpsys package com.sln162.bootrescue | grep -A2 WRITE_SECURE_SETTINGS
+```
+
+三条依次应当是：串里包含 `com.sln162.bootrescue`、`hasBound=true`、`WRITE_SECURE_SETTINGS: granted=true`。少任何一条，开机那次就可能没人救。
+
+**让 AI 代装的话**，把上面这一节原样发给它，装完让它跑这三条自检，把输出贴回来核对。它照着跑就行，不需要它理解背后的机制。
 
 ## 页面显示
 
