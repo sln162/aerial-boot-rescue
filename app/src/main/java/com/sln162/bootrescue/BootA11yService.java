@@ -23,6 +23,7 @@ public class BootA11yService extends AccessibilityService {
     private static final String AERIAL_PKG = "app.orchard.tv";
     private static final String AERIAL_CLS = "app.orchard.tv.MainActivity";
     private static final String RESOLVER_PKG = "com.xgimi.xgimiframeworkui";
+    private static final long WINDOW_MS = 180000L;
     private static final long CHECK_MS = 2000L;
     private static final long ENSURE_DEBOUNCE_MS = 30000L;
 
@@ -159,21 +160,21 @@ public class BootA11yService extends AccessibilityService {
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
+            long now = SystemClock.elapsedRealtime();
             attempts++;
             String front = frontPackage();
             if (front != null && AERIAL_PKG.equals(front)) {
-                log("aerial in front, done");
                 handler.postDelayed(this, CHECK_MS);
                 return;
             }
             if (RESOLVER_PKG.equals(front)) {
                 log("front=resolver, pulling aerial (attempt " + attempts + ")");
                 pull();
-            } else if (front == null) {
+            } else if (front == null && now - startedAt <= WINDOW_MS) {
                 log("no window, pulling aerial (attempt " + attempts + ")");
                 pull();
             } else {
-                log("front=" + front + ", leave alone");
+                log("front=" + (front == null ? "null" : front) + ", leave alone");
             }
             handler.postDelayed(this, CHECK_MS);
         }
