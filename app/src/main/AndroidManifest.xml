@@ -6,7 +6,7 @@
 
     <application
         android:allowBackup="false"
-        android:label="BootRescue">
+        android:label="极米防黑屏">
 
         <service
             android:name=".BootA11yService"
