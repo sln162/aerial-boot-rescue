@@ -205,12 +205,17 @@ public class BootA11yService extends AccessibilityService {
             i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_CLS));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             startActivity(i);
-            // 画面救回来之后，弹一次提醒页，让家里人知道刚才黑过屏、按返回就能继续看
-            handler.postDelayed(tipRun, 3000);
+            // 画面救回来之后，弹一次提醒页。只排一次，否则黑屏那几秒会被重复排多次、反复闪
+            if (!tipPending) {
+                tipPending = true;
+                handler.postDelayed(tipRun, 3000);
+            }
         } catch (Throwable t) {
             log("startActivity failed: " + t);
         }
     }
+
+    private boolean tipPending = false;
 
     private final Runnable tipRun = new Runnable() {
         @Override
