@@ -54,15 +54,14 @@ public class MainActivity extends Activity {
             title.setText("电视刚才黑屏了");
         } else {
             title.setText(on ? "桌面守护运行中" : "桌面守护未启用");
-        }
-        title.setTextColor(Color.parseColor("#EDF5F0"));
+        }        title.setTextColor(Color.parseColor("#EDF5F0"));
         title.setTextSize(34);
         title.setGravity(Gravity.CENTER);
         root.addView(title);
 
         TextView sub = new TextView(this);
         if (bootTip) {
-            sub.setText("别急，已经自动恢复，可以继续看");
+            sub.setText("已经修好了，能接着看");
         } else {
             sub.setText(on ? "电视黑屏时，它会自己把桌面拉回来" : "请到 系统设置 → 无障碍 → BootRescue → 启用");
         }
@@ -86,9 +85,9 @@ public class MainActivity extends Activity {
 
         TextView tips = new TextView(this);
         if (bootTip) {
-            tips.setText("按一下遥控器「返回」\n就能回到桌面继续看\n\n"
-                    + "这次是它自己把画面拉回来的\n"
-                    + "守护：" + (on ? "正在运行" : "没有启用"));
+            tips.setText("按一下遥控器「返回」\n就直接回到电视桌面\n"
+                    + "（别按主页键，会弹框）\n\n"
+                    + "是这台电视上的 BootRescue\n把刚才黑掉的画面救回来的");
         } else {
             tips.setText("如果电视黑屏\n"
                     + "遥控器按一次「返回」\n"
@@ -104,7 +103,7 @@ public class MainActivity extends Activity {
 
         // 底部小字
         TextView foot = new TextView(this);
-        foot.setText("BootRescue 2.6  ·  " + (bootTip ? "刚自动恢复过" : (on ? "守护开着" : "守护关着")));
+        foot.setText("BootRescue 2.8  ·  " + (bootTip ? "刚把画面救回来" : (on ? "守护开着" : "守护关着")));
         foot.setTextColor(Color.parseColor("#41544B"));
         foot.setTextSize(12);
         foot.setGravity(Gravity.CENTER);
