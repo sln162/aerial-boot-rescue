@@ -86,8 +86,7 @@ public class MainActivity extends Activity {
 
         TextView tips = new TextView(this);
         if (bootTip) {
-            tips.setText("按一下「返回」立刻回去\n\n"
-                    + "（别按主页键，会弹框）");
+            tips.setText("按一下「返回」立刻回去");
         } else {
             tips.setText("平时不用管它\n"
                     + "电视黑屏的时候\n"
@@ -102,7 +101,7 @@ public class MainActivity extends Activity {
 
         // 底部小字
         TextView foot = new TextView(this);
-        foot.setText("极米防黑屏 1.1.1  ·  " + (bootTip ? "马上回桌面" : (on ? "开着" : "关着")));
+        foot.setText("极米防黑屏 1.1.2  ·  " + (bootTip ? "马上回桌面" : (on ? "开着" : "关着")));
         foot.setTextColor(Color.parseColor("#7A8F84"));
         foot.setTextSize(14);
         foot.setGravity(Gravity.CENTER);
