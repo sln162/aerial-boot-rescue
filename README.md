@@ -108,44 +108,46 @@ python tools/fix-aerial-home.py --rescue   # 黑屏救援：修完再把 Aerial 
 
 ## 按主页键弹的选择框，直接干掉它
 
-1.4.0 起，这个服务还多干一件事：**盯着 HOME 选择框，一出现就关掉**。不点「始终」、不写记录，跟首选记录是两条独立的路。
+1.5 起，这个服务还多干一件事：**盯着 HOME 选择框，一出现就点掉它**。不点「始终」、不写记录，跟首选记录是两条独立的路。
 
 判据只看事件本身：`TYPE_WINDOW_STATE_CHANGED` 且包名/类名是
 
 - `com.xgimi.xgimiframeworkui` + 末尾 `.resolver.ResolverActivity`（极米自己的）
 - `android` + `com.android.internal.app.ResolverActivity`（AOSP 的）
 
-命中后立刻做，全程不遍历列表、不点任何一行：
+事件偶尔会漏（实测 10 次漏 2 次），所以另有 1 秒一次的看门狗：前台突然变成极米框架、或者前台是空的但窗口列表里还压着一个弹框，都会补一次。
 
-| 动作 | H3S 实测 |
-|---|---|
-| `performAction(ACTION_DISMISS)` | **false**。极米这个 resolver 的根节点是 `android.widget.FrameLayout`，不支持 dismiss |
-| `performGlobalAction(GLOBAL_ACTION_BACK)` | true，弹框关掉 |
-| `startActivity(app.orchard.tv)` | 弹框关掉后立刻请求 Aerial |
+命中后做的事：
 
-四次按主页键的实测时间线（日志里的 `chooser` 行）：
+1. 从 `getWindows()` 里挑出那个弹框窗口的根（无障碍配置里要带 `flagRetrieveInteractiveWindows`）
+2. 找到文字是 `Aerial` 的候选行，**点一次**（点它往上第一个可点的祖先，也就是整行容器）
+3. 等「仅此一次 / 始终 / 取消」从灰变亮（约 0.3~0.9 秒），点「仅此一次」
+4. 弹框自己 finish 并启动选中的候选，Aerial 到站
+
+实测时间线（日志里的 `probe` 行）：
 
 ```
-+18~41ms   ACTION_DISMISS=false        （每次都 false，这条路在 H3S 上不成立）
-+26~57ms   BACK=true
-+247~347ms 前台为空（切换过程中）
-+653~888ms 前台=app.orchard.tv         ← 桌面真的回来了
++35~44ms    click row Aerial=true
++323~414ms  click 仅此一次=true        ← 按钮已经亮了
++951~1040ms check#2 front=app.orchard.tv
 ```
 
-也就是说：**弹框出现到底，桌面回来不到 1 秒**。原来那种「按主页键卡十几秒、屏幕黑着」的状态没有了，也不用去点「始终」。
+连按 5 次，5/5 回到 Aerial，全程零次返回键、零条首选记录写入。
 
 几点要知道：
 
-- 弹框还是会先出现一瞬（几十毫秒），只是没人看见；它不会停留在那里等选中
-- 这个动作与首选记录完全无关，**记录坏了也照常工作**，所以重启之后记录被固件丢掉，也不再影响按主页键
-- `ACTION_DISMISS` 在这台机器上是死路，代码里保留它只是兜底，真正生效的是 BACK
-- 关闭之后必须再 `startActivity` 才有桌面：弹框关掉只是回到进弹框之前那个应用，不会自动回 Aerial
+- **不发返回键**。`performGlobalAction(GLOBAL_ACTION_BACK)` 永远发给当前有焦点的窗口，在第三方 app 里按主页键时这一下会先落到那个 app 身上，实测要卡几秒才回来；节点动作则是直达目标窗口，不管谁在前台
+- **不用「始终」**。实测按「始终」写进记录的是默认选中的那一行，也就是极米桌面（`always="true"` 直接把它设成默认）。这个弹框的选中态只有真人按遥控器才会移动：点候选行改不了 `selected`，`ACTION_SELECT` 能改却会把三个按钮锁死成灰的，真实触摸在没有触摸屏的电视上会被丢掉。所以代码里没有「始终」这条路径，宁可点「仅此一次」
+- **只能点一次候选行**。按钮从灰变亮是有一小段延迟的，反复点会把这段过程一直重置，最后等不到按钮亮
+- **必须抢在被盖住之前动手**。弹框一旦被 Aerial 盖住，就从 `getWindows()` 里消失了，节点点击无从下手；这也是这套动作放在事件里 0 延迟执行、而不是先等几百毫秒的原因
+- `ACTION_DISMISS` 对极米这个 resolver 恒 false，`ACTION_CLOSE_SYSTEM_DIALOGS` 广播也推不动它，两条都实测过，代码里没留
 
 ## 局限
 
 
 - 黑屏后要等「开机流程走完 + 连续两次读数」，实测白屏认证通过后大约 10 秒左右恢复，这个时间跟机器快慢有关
-- 记录坏掉之后，按主页键还是会弹选择框或者卡几秒。这个救不了，只能靠页面上「主页规则」看到状态，自己按下面两种方式修
+- 按主页键那一下，弹框还是会先出现几十毫秒，然后被点掉；从按下到 Aerial 到站实测 1.0~1.9 秒
+- 这个应用**不会**替你在弹框里点「始终」。想彻底不弹框只能人工按一次：右键切到 Aerial → 确定 → 始终，之后系统不再解析 HOME。自动化点它一定记到极米桌面，见上一节
 - 想开机和按主页键都不弹框，要写双 home（一条 `set=3` 不带 DEFAULT + 一条 `set=2` 带 DEFAULT，见 Aerial 的 issue #942）。双 home 也可能被固件随机丢掉，丢掉之后还是会黑，那就靠这个应用拉起来
 - 极米系统在解锁时会重写无障碍列表，有可能把本应用剔出去。授予 `WRITE_SECURE_SETTINGS` 之后它会自己写回来，没授予的话需要手动再开
 
@@ -160,14 +162,20 @@ adb shell run-as com.sln162.bootrescue cat /data/user_de/0/com.sln162.bootrescue
 | 日志 | 含义 |
 |---|---|
 | `bound, uptime=` | 服务绑上了 |
+| `bound: no chooser window yet` | 绑上那一刻查了一眼，没有弹框（开机那种情况看这行） |
+| `bound: chooser already up at uptime=` | 绑上那一刻弹框已经在了，直接处理 |
 | `still booting (bootanim=...)` | 系统还在开机（白屏、动画、认证），等待，不动手 |
 | `boot finished but no usable window (1/2, front=...)` | 开机流程走完，但没看到可用界面，开始计数 |
 | `boot finished and still nothing ... pulling aerial` | 连续两次都空，拉 Aerial |
 | `boot tip shown` | 提醒页弹出来了 |
 | `aerial in front, done` | 桌面回来了，收工 |
-| `chooser ... ACTION_DISMISS=` | 抓到 HOME 选择框，先试 dismiss，记返回值 |
-| `chooser ... BACK=` | dismiss 不支持，退回 BACK |
-| `chooser ... front=... at +Nms` | 弹框之后第 N 毫秒时前台是谁，用来看多快回到桌面 |
+| `probe ...: chooser window at +Nms` | 找到了弹框窗口 |
+| `probe ...: click row Aerial=` | 点了 Aerial 那一行，按钮随后才会变亮 |
+| `probe ...: click 仅此一次=` | 点了「仅此一次」，弹框会自己结束并启动 Aerial |
+| `probe ...: 仅此一次 never enabled, click 取消=` | 一直没等到按钮变亮，退化成点「取消」收尾 |
+| `settle ...: check#N front=... at +Nms` | 第 N 次看前台是谁，用来看多快回到桌面 |
+| `watch: front=..., event missed, handle as chooser` | 事件漏了，看门狗按弹框处理 |
+| `watch: front=null but chooser window alive, handle it` | 前台黑着但弹框还压着，看门狗补一次 |
 
 ## 构建
 

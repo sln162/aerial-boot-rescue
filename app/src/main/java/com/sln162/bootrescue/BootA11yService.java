@@ -6,12 +6,17 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.database.ContentObserver;
+import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -59,6 +64,29 @@ public class BootA11yService extends AccessibilityService {
         ensureSelf(this, true);
         watchSettings();
         handler.postDelayed(tick, CHECK_MS);
+        handler.postDelayed(watch, WATCH_MS);
+        // 刚绑上就先看一眼：开机那次的弹框如果这会儿还在，立刻点掉
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    AccessibilityNodeInfo root = chooserRootQuiet();
+                    if (root != null) {
+                        log("bound: chooser already up at uptime="
+                                + SystemClock.elapsedRealtime() + "ms, handle now");
+                        killChooser("bound@" + SystemClock.elapsedRealtime(), SystemClock.elapsedRealtime());
+                        try {
+                            root.recycle();
+                        } catch (Throwable ignored) {
+                        }
+                    } else {
+                        log("bound: no chooser window yet");
+                    }
+                } catch (Throwable t) {
+                    log("bound probe failed: " + t);
+                }
+            }
+        });
     }
 
     private void watchSettings() {
@@ -268,6 +296,9 @@ public class BootA11yService extends AccessibilityService {
     /** 处理选择框时用：只把 Aerial 拉到前台，不弹提醒页 */
     private void pullQuiet() {
         try {
+            // 按 HOME 之后应用在后台，直接 startActivity 会被系统挡住（实测前台一直是 null）。
+            // 先挂一个 1px 的无障碍 overlay，让系统认为本应用有可见窗口，再启动就能过。
+            showOverlay();
             Intent i = new Intent();
             i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_CLS));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
@@ -275,6 +306,49 @@ public class BootA11yService extends AccessibilityService {
         } catch (Throwable t) {
             log("pullQuiet failed: " + t);
         }
+    }
+
+    private View overlay;
+
+    private void showOverlay() {
+        if (overlay != null) {
+            return;
+        }
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            if (wm == null) {
+                return;
+            }
+            View v = new View(this);
+            WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                    1, 1,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                    PixelFormat.TRANSLUCENT);
+            lp.gravity = Gravity.START | Gravity.TOP;
+            wm.addView(v, lp);
+            overlay = v;
+            log("overlay: added");
+        } catch (Throwable t) {
+            log("overlay: add failed " + t);
+        }
+    }
+
+    private void hideOverlay() {
+        if (overlay == null) {
+            return;
+        }
+        try {
+            WindowManager wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            if (wm != null) {
+                wm.removeView(overlay);
+            }
+            log("overlay: removed");
+        } catch (Throwable t) {
+            log("overlay: remove failed " + t);
+        }
+        overlay = null;
     }
 
 
@@ -297,11 +371,52 @@ public class BootA11yService extends AccessibilityService {
     };
 
     private static final String XGIMI_FW = "com.xgimi.xgimiframeworkui";
+    /** 极米原桌面：弹框默认选中的就是它，被它顶上来不算到站 */
+    private static final String XGIMI_HOME = "com.xgimi.home";
     private static final String ANDROID_FW = "android";
     private static final String AOSP_CHOOSER = "com.android.internal.app.ResolverActivity";
     /** 连续事件冷却：typeWindowContentChanged 会连刷，3 秒内只处理一次 */
     private static final long CHOOSER_COOLDOWN_MS = 3000L;
+    /** 弹框窗口出现还看不到时，250ms 一轮继续找 */
+    private static final long CHOOSER_POLL_MS = 250L;
     private long chooserAt = 0L;
+
+    /** 事件偶尔会漏（实测 10 次漏 2 次），所以再加一个 1 秒一次的看门狗兜底 */
+    private static final long WATCH_MS = 1000L;
+    private static final long WATCH_CHOOSER_GAP_MS = 4000L;
+
+    private final Runnable watch = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                String front = frontPackage();
+                long now = SystemClock.elapsedRealtime();
+                if (XGIMI_FW.equals(front) && now - chooserAt > WATCH_CHOOSER_GAP_MS) {
+                    // 前台突然变成极米框架窗口：事件漏了，这里补上
+                    chooserAt = now;
+                    log("watch: front=" + front + ", event missed, handle as chooser");
+                    killChooser("watch/" + front, now);
+                } else if (front == null && now - chooserAt > WATCH_CHOOSER_GAP_MS) {
+                    // 前台是空的（黑屏）：看看窗口列表里是不是还压着一个看不见的弹框
+                    AccessibilityNodeInfo r = chooserRootQuiet();
+                    if (r != null) {
+                        chooserAt = now;
+                        log("watch: front=null but chooser window alive, handle it");
+                        killChooser("watch/null", now);
+                        try {
+                            r.recycle();
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                log("watch failed: " + t);
+            }
+            if (handler != null) {
+                handler.postDelayed(this, WATCH_MS);
+            }
+        }
+    };
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
@@ -335,57 +450,292 @@ public class BootA11yService extends AccessibilityService {
     }
 
     /**
-     * 选择框一出现就干掉它，不点"始终"、不遍历列表。
-     * 先试 ACTION_DISMISS；不支持就退回 BACK；不管哪种都立刻请求 Aerial。
-     * 全程写时间戳，用来量"从事件到 Aerial 到前台"到底多少毫秒。
+     * 不用返回键：点弹框自己的控件把它关掉。
+     * 实测弹框的"仅此一次/始终/取消"在没选中候选前是灰的、点不动，
+     * 所以先点中 Aerial 那一行（按钮随即变亮），再点"仅此一次"——弹框自己 finish 并启动 Aerial，
+     * 不写任何首选记录。两条都走不通时退化到点"取消"（它本身就等价于对这个窗口按返回）。
+     * 必须抢在被 Aerial 盖住之前动手：一旦盖住，getWindows() 里就看不到这个弹框了。
      */
     private void killChooser(String who, long eventAt) {
-        try {
-            AccessibilityNodeInfo root = getRootInActiveWindow();
-            if (root == null) {
-                log("chooser " + who + ": root=null, cannot act");
-                return;
-            }
-            String rootPkg = root.getPackageName() == null ? "?" : root.getPackageName().toString();
-            String rootCls = root.getClassName() == null ? "?" : root.getClassName().toString();
-            boolean dismiss = root.performAction(AccessibilityNodeInfo.ACTION_DISMISS);
-            log("chooser " + who + ": root=" + rootPkg + "/" + rootCls
-                    + " ACTION_DISMISS=" + dismiss
-                    + " at +" + (SystemClock.elapsedRealtime() - eventAt) + "ms");
-            try {
-                root.recycle();
-            } catch (Throwable ignored) {
-            }
-            if (!dismiss) {
-                boolean back = performGlobalAction(GLOBAL_ACTION_BACK);
-                log("chooser " + who + ": BACK=" + back
-                        + " at +" + (SystemClock.elapsedRealtime() - eventAt) + "ms");
-            }
-            // 弹框没了不等于回到桌面，仍然要把 Aerial 拉起来
-            pullQuiet();
-            final long at = eventAt;
-            final String tag = who;
-            if (handler == null) {
-                return;
-            }
-            // 采样前台变化，量"从事件到 Aerial 真的到前台"用了多久
-            handler.postDelayed(new Runnable() {
-                private int step = 0;
-                private final long[] marks = {200L, 400L, 800L, 1600L, 2400L, 3600L};
+        if (handler == null) {
+            return;
+        }
+        handler.post(new Probe(who, eventAt, 0));
+    }
 
-                @Override
-                public void run() {
-                    long elapsedMs = SystemClock.elapsedRealtime() - at;
-                    log("chooser " + tag + ": front=" + frontPackage() + " at +" + elapsedMs + "ms");
-                    if (step < marks.length - 1) {
-                        step++;
-                        handler.postDelayed(this, marks[step] - elapsedMs);
+    private final class Probe implements Runnable {
+        private final String who;
+        private final long at;
+        private final int n;
+
+        Probe(String who, long at, int n) {
+            this.who = who;
+            this.at = at;
+            this.n = n;
+        }
+
+        @Override
+        public void run() {
+            long ms = SystemClock.elapsedRealtime() - at;
+            AccessibilityNodeInfo root = chooserRoot(who);
+            if (root == null) {
+                // 弹框窗口还没出现（或已经被盖住看不见了），继续等
+                if (n < 24 && handler != null) {
+                    handler.postDelayed(new Probe(who, at, n + 1), CHOOSER_POLL_MS);
+                } else if (n >= 24) {
+                    log("probe " + who + ": chooser never showed up, gave up at +" + ms + "ms");
+                }
+                return;
+            }
+            try {
+                log("probe " + who + ": chooser window at +" + ms + "ms");
+                AccessibilityNodeInfo aerialRow = clickableAncestor(findByText(root, "Aerial", false));
+                AccessibilityNodeInfo xgimiRow = clickableAncestor(findByText(root, "极米桌面", false));
+                log("probe " + who + ": Aerial[" + rowState(aerialRow) + "] 极米桌面["
+                        + rowState(xgimiRow) + "] at +" + ms + "ms");
+                AccessibilityNodeInfo once = findByText(root, "仅此一次", true);
+                if (once == null) {
+                    once = findByText(root, "仅一次", true);
+                }
+                // 实测这个弹框的选中态只有真人按遥控器才会动：点候选行改不了 selected，
+                // ACTION_SELECT 能改 selected 却会把按钮锁成 disabled，真实触摸在没触摸屏的电视上被丢掉。
+                // 所以「始终」永远记到默认那一行（极米桌面），只能走「仅此一次」——
+                // 它让弹框自己启动候选并 finish，不写任何首选记录。
+                if (once != null && once.isEnabled()) {
+                    boolean c = clickUp(once);
+                    log("probe " + who + ": click 仅此一次=" + c + " at +"
+                            + (SystemClock.elapsedRealtime() - at) + "ms");
+                    if (c) {
+                        scheduleSettle(who, at);
+                        return;
                     }
                 }
-            }, 200L);
-        } catch (Throwable t) {
-            log("chooser " + who + " failed: " + t);
+                if (n == 0 && handler != null) {
+                    // 点一下候选行，按钮才会从灰变亮（约 0.9 秒）。
+                    // 注意只能点一次：反复点会把"变亮"的过程一直重置。
+                    boolean rowClick = clickUp(aerialRow);
+                    log("probe " + who + ": click row Aerial=" + rowClick + " at +"
+                            + (SystemClock.elapsedRealtime() - at) + "ms");
+                    if (rowClick) {
+                        handler.postDelayed(new Probe(who, at, 1), 250L);
+                        return;
+                    }
+                }
+                if (n < 10 && handler != null) {
+                    handler.postDelayed(new Probe(who, at, n + 1), 250L);
+                    return;
+                }
+                // 一直等不到按钮变亮：宁可点"取消"把这个窗口关掉，也不盲点"始终"记错桌面
+                AccessibilityNodeInfo cancel = findByText(root, "取消", true);
+                boolean c = clickUp(cancel);
+                log("probe " + who + ": 仅此一次 never enabled, click 取消=" + c + " at +"
+                        + (SystemClock.elapsedRealtime() - at) + "ms");
+                if (c) {
+                    scheduleSettle(who, at);
+                }
+            } catch (Throwable t) {
+                log("probe " + who + " failed: " + t);
+            } finally {
+                try {
+                    root.recycle();
+                } catch (Throwable ignored) {
+                }
+            }
         }
+    }
+
+    private void scheduleSettle(String who, long at) {
+        if (handler != null) {
+            handler.postDelayed(new Settle(who, at, 1), 250L);
+        }
+    }
+
+    /**
+     * 从所有窗口里挑出弹框那个窗口的根节点——即使它被 Aerial 盖住、没有焦点。
+     * 拿到之后可以直接对它发 ACTION_CLICK，动作直达那个窗口，不看谁在前台。
+     */
+    private AccessibilityNodeInfo chooserRoot(String who) {
+        try {
+            java.util.List<AccessibilityWindowInfo> wins = getWindows();
+            StringBuilder sb = new StringBuilder("windows:");
+            AccessibilityNodeInfo fallback = null;
+            if (wins != null) {
+                for (AccessibilityWindowInfo w : wins) {
+                    AccessibilityNodeInfo r = w.getRoot();
+                    if (r == null) {
+                        continue;
+                    }
+                    String p = str(r.getPackageName());
+                    sb.append(' ').append(p).append('/').append(str(r.getClassName()))
+                            .append(w.isActive() ? "(active)" : "")
+                            .append(w.isFocused() ? "(focused)" : "");
+                    if (XGIMI_FW.equals(p)) {
+                        log("probe " + who + ": " + sb);
+                        return r;
+                    }
+                    if (fallback == null) {
+                        fallback = r;
+                    } else {
+                        try {
+                            r.recycle();
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            }
+            log("probe " + who + ": " + sb);
+            if (fallback != null) {
+                String p = str(fallback.getPackageName());
+                if (AERIAL_PKG.equals(p)) {
+                    log("probe " + who + ": only " + p + ", chooser gone");
+                    try {
+                        fallback.recycle();
+                    } catch (Throwable ignored) {
+                    }
+                    return null;
+                }
+                return fallback;
+            }
+        } catch (Throwable t) {
+            log("chooserRoot failed: " + t);
+        }
+        return getRootInActiveWindow();
+    }
+
+    /** 点完之后核对前台；Aerial 没上来且没人用设备时就把它请上来 */
+    private final class Settle implements Runnable {
+        private final String who;
+        private final long at;
+        private final int n;
+
+        Settle(String who, long at, int n) {
+            this.who = who;
+            this.at = at;
+            this.n = n;
+        }
+
+        @Override
+        public void run() {
+            long ms = SystemClock.elapsedRealtime() - at;
+            String front = frontPackage();
+            log("settle " + who + ": check#" + n + " front=" + front + " at +" + ms + "ms");
+            if (AERIAL_PKG.equals(front)) {
+                hideOverlay();
+                return;
+            }
+            // 用户自己开起了别的 app（不是极米系）就别抢了
+            if (front != null && !XGIMI_FW.equals(front) && !XGIMI_HOME.equals(front) && ms > 1500L) {
+                log("settle " + who + ": front is " + front + ", stop");
+                hideOverlay();
+                return;
+            }
+            if (n > 30) {
+                log("settle " + who + ": gave up");
+                hideOverlay();
+                return;
+            }
+            // 弹框的"仅此一次"会把默认选中的极米桌面顶上来（实测会闪一下），
+            // Aerial 得等极米桌面自己的守护再顶回来；超过 5.6 秒还没到才自己拉
+            if (ms > 5600L || (front == null && ms > 2500L)) {
+                pullQuiet();
+            }
+            handler.postDelayed(new Settle(who, at, n + 1), 300L);
+        }
+    }
+
+    /** 只看窗口列表里有没有极米的弹框窗口，不打印窗口清单（轮询里用） */
+    private AccessibilityNodeInfo chooserRootQuiet() {
+        try {
+            java.util.List<AccessibilityWindowInfo> wins = getWindows();
+            if (wins != null) {
+                for (AccessibilityWindowInfo w : wins) {
+                    AccessibilityNodeInfo r = w.getRoot();
+                    if (r == null) {
+                        continue;
+                    }
+                    if (XGIMI_FW.equals(str(r.getPackageName()))) {
+                        return r;
+                    }
+                    try {
+                        r.recycle();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            log("chooserRootQuiet failed: " + t);
+        }
+        return null;
+    }
+
+    /** 广度优先找 text / desc 命中的节点；exact=true 时要求完全相等 */
+    private AccessibilityNodeInfo findByText(AccessibilityNodeInfo root, String needle, boolean exact) {
+        java.util.ArrayDeque<AccessibilityNodeInfo> queue = new java.util.ArrayDeque<>();
+        queue.add(root);
+        int guard = 0;
+        while (!queue.isEmpty() && guard++ < 200) {
+            AccessibilityNodeInfo node = queue.poll();
+            if (node == null) {
+                continue;
+            }
+            String text = node.getText() == null ? null : node.getText().toString();
+            String desc = node.getContentDescription() == null
+                    ? null : node.getContentDescription().toString();
+            boolean hit = exact
+                    ? (needle.equals(text) || needle.equals(desc))
+                    : (text != null && text.contains(needle));
+            if (hit) {
+                return node;
+            }
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    queue.add(child);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String str(Object o) {
+        return o == null ? "-" : o.toString();
+    }
+
+    /** 从命中的节点往上找第一个可点的祖先再点（"Aerial" 那行文字本身不可点，可点的是外层 LinearLayout） */
+    private boolean clickUp(AccessibilityNodeInfo node) {
+        AccessibilityNodeInfo cur = node;
+        for (int i = 0; i < 6 && cur != null; i++) {
+            if (cur.isClickable() && cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                return true;
+            }
+            cur = cur.getParent();
+        }
+        return false;
+    }
+
+    /** 从命中的文字节点往上找那个"可点的整行"（候选行容器），找不到返回原节点 */
+    private AccessibilityNodeInfo clickableAncestor(AccessibilityNodeInfo node) {
+        AccessibilityNodeInfo cur = node;
+        for (int i = 0; i < 6 && cur != null; i++) {
+            if (cur.isClickable()) {
+                return cur;
+            }
+            AccessibilityNodeInfo parent = cur.getParent();
+            if (parent == null) {
+                break;
+            }
+            cur = parent;
+        }
+        return node;
+    }
+
+    /** 打印候选行的选中/焦点/可点状态，用来判断"始终"会记到谁头上 */
+    private String rowState(AccessibilityNodeInfo row) {
+        if (row == null) {
+            return "null";
+        }
+        return "sel=" + row.isSelected() + " foc=" + row.isFocused()
+                + " a11yFoc=" + row.isAccessibilityFocused() + " clk=" + row.isClickable();
     }
 
     @Override
