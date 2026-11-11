@@ -293,6 +293,20 @@ public class BootA11yService extends AccessibilityService {
         }
     }
 
+    /** 点完「仅此一次」立刻把 Aerial 请上来，抢在弹框自己启动极米桌面那一下之前。
+     *  无障碍服务本身豁免后台启动限制，不需要 overlay。 */
+    private void pullNow() {
+        try {
+            Intent i = new Intent();
+            i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_CLS));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            startActivity(i);
+            log("pull: start aerial right after click 仅此一次");
+        } catch (Throwable t) {
+            log("pullNow failed: " + t);
+        }
+    }
+
     /** 处理选择框时用：只把 Aerial 拉到前台，不弹提醒页 */
     private void pullQuiet() {
         try {
@@ -377,8 +391,10 @@ public class BootA11yService extends AccessibilityService {
     private static final String AOSP_CHOOSER = "com.android.internal.app.ResolverActivity";
     /** 连续事件冷却：typeWindowContentChanged 会连刷，3 秒内只处理一次 */
     private static final long CHOOSER_COOLDOWN_MS = 3000L;
-    /** 弹框窗口出现还看不到时，250ms 一轮继续找 */
-    private static final long CHOOSER_POLL_MS = 250L;
+    /** 弹框窗口出现还看不到时，80ms 一轮继续找（按钮变亮就在这一小段时间里，间隔太大就白等） */
+    private static final long CHOOSER_POLL_MS = 80L;
+    /** 点完候选行之后最多再等这么多轮（80ms × 16 ≈ 1.3 秒）就让位给"取消"兜底 */
+    private static final int ONCE_MAX_ROUND = 16;
     private long chooserAt = 0L;
 
     /** 事件偶尔会漏（实测 10 次漏 2 次），所以再加一个 1 秒一次的看门狗兜底 */
@@ -477,7 +493,12 @@ public class BootA11yService extends AccessibilityService {
         @Override
         public void run() {
             long ms = SystemClock.elapsedRealtime() - at;
-            AccessibilityNodeInfo root = chooserRoot(who);
+            // 已经在 Aerial 了就别再动：省掉空转，也不跟 Aerial 自己的守护抢动作
+            if (n > 0 && AERIAL_PKG.equals(frontPackage())) {
+                log("probe " + who + ": aerial already in front, stop at +" + ms + "ms");
+                return;
+            }
+            AccessibilityNodeInfo root = (n == 0) ? chooserRoot(who) : chooserRootQuiet();
             if (root == null) {
                 // 弹框窗口还没出现（或已经被盖住看不见了），继续等
                 if (n < 24 && handler != null) {
@@ -488,41 +509,33 @@ public class BootA11yService extends AccessibilityService {
                 return;
             }
             try {
-                log("probe " + who + ": chooser window at +" + ms + "ms");
-                AccessibilityNodeInfo aerialRow = clickableAncestor(findByText(root, "Aerial", false));
-                AccessibilityNodeInfo xgimiRow = clickableAncestor(findByText(root, "极米桌面", false));
-                log("probe " + who + ": Aerial[" + rowState(aerialRow) + "] 极米桌面["
-                        + rowState(xgimiRow) + "] at +" + ms + "ms");
-                AccessibilityNodeInfo once = findByText(root, "仅此一次", true);
-                if (once == null) {
-                    once = findByText(root, "仅一次", true);
-                }
-                // 实测这个弹框的选中态只有真人按遥控器才会动：点候选行改不了 selected，
-                // ACTION_SELECT 能改 selected 却会把按钮锁成 disabled，真实触摸在没触摸屏的电视上被丢掉。
-                // 所以「始终」永远记到默认那一行（极米桌面），只能走「仅此一次」——
-                // 它让弹框自己启动候选并 finish，不写任何首选记录。
-                if (once != null && once.isEnabled()) {
-                    boolean c = clickUp(once);
-                    log("probe " + who + ": click 仅此一次=" + c + " at +"
-                            + (SystemClock.elapsedRealtime() - at) + "ms");
-                    if (c) {
-                        scheduleSettle(who, at);
-                        return;
+                Holder h = new Holder();
+                scanChooser(root, h);
+
+                if (n == 0) {
+                    // 第一轮：只点一次候选行。反复点会把"按钮变亮"的过程一直重置。
+                    log("probe " + who + ": chooser window at +" + ms + "ms");
+                    log("probe " + who + ": Aerial[" + rowState(h.aerialRow) + "] 极米桌面["
+                            + rowState(h.xgimiRow) + "] 仅此一次enabled="
+                            + (h.once != null && h.once.isEnabled()) + " at +" + ms + "ms");
+                    boolean rowClick = clickUp(h.aerialRow);
+                    log("probe " + who + ": click row Aerial=" + rowClick + " at +" + ms + "ms");
+                    if (handler != null) {
+                        handler.postDelayed(new Probe(who, at, 1), CHOOSER_POLL_MS);
                     }
+                    return;
                 }
-                if (n == 0 && handler != null) {
-                    // 点一下候选行，按钮才会从灰变亮（约 0.9 秒）。
-                    // 注意只能点一次：反复点会把"变亮"的过程一直重置。
-                    boolean rowClick = clickUp(aerialRow);
-                    log("probe " + who + ": click row Aerial=" + rowClick + " at +"
-                            + (SystemClock.elapsedRealtime() - at) + "ms");
-                    if (rowClick) {
-                        handler.postDelayed(new Probe(who, at, 1), 250L);
-                        return;
-                    }
+
+                // 按钮一亮就点：不先查 isEnabled，直接点，返回 false 就下一轮再来，
+                // 这样"变亮的那个瞬间"就被抓住，不用等下一整轮
+                if (h.once != null && clickUp(h.once)) {
+                    log("probe " + who + ": click 仅此一次 at +" + ms + "ms (round " + n + ")");
+                    pullNow();
+                    scheduleSettle(who, at);
+                    return;
                 }
-                if (n < 10 && handler != null) {
-                    handler.postDelayed(new Probe(who, at, n + 1), 250L);
+                if (n < ONCE_MAX_ROUND && handler != null) {
+                    handler.postDelayed(new Probe(who, at, n + 1), CHOOSER_POLL_MS);
                     return;
                 }
                 // 一直等不到按钮变亮：宁可点"取消"把这个窗口关掉，也不盲点"始终"记错桌面
@@ -542,6 +555,59 @@ public class BootA11yService extends AccessibilityService {
                 }
             }
         }
+    }
+
+    /** 一轮扫描的产物：候选行、按钮。每轮只遍历一次节点树。 */
+    private static final class Holder {
+        AccessibilityNodeInfo aerialRow;
+        AccessibilityNodeInfo xgimiRow;
+        AccessibilityNodeInfo once;
+    }
+
+    /** 一次广度遍历，把 Aerial 行 / 极米桌面行 / 仅此一次 全找出来，找齐就提前收手 */
+    private void scanChooser(AccessibilityNodeInfo root, Holder h) {
+        java.util.ArrayDeque<AccessibilityNodeInfo> queue = new java.util.ArrayDeque<>();
+        queue.add(root);
+        AccessibilityNodeInfo aerialText = null;
+        AccessibilityNodeInfo xgimiText = null;
+        AccessibilityNodeInfo onceText = null;
+        int guard = 0;
+        while (!queue.isEmpty() && guard++ < 250) {
+            AccessibilityNodeInfo node = queue.poll();
+            if (node == null) {
+                continue;
+            }
+            String text = node.getText() == null ? null : node.getText().toString();
+            String desc = node.getContentDescription() == null
+                    ? null : node.getContentDescription().toString();
+            if (aerialText == null && (matches(text, desc, "Aerial", false))) {
+                aerialText = node;
+            } else if (xgimiText == null && matches(text, desc, "极米桌面", false)) {
+                xgimiText = node;
+            } else if (onceText == null
+                    && (matches(text, desc, "仅此一次", true) || matches(text, desc, "仅一次", true))) {
+                onceText = node;
+            }
+            if (aerialText != null && xgimiText != null && onceText != null) {
+                break;
+            }
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    queue.add(child);
+                }
+            }
+        }
+        h.aerialRow = clickableAncestor(aerialText);
+        h.xgimiRow = clickableAncestor(xgimiText);
+        h.once = onceText;
+    }
+
+    private static boolean matches(String text, String desc, String needle, boolean exact) {
+        if (exact) {
+            return needle.equals(text) || needle.equals(desc);
+        }
+        return (text != null && text.contains(needle)) || (desc != null && desc.contains(needle));
     }
 
     private void scheduleSettle(String who, long at) {

@@ -120,33 +120,37 @@ python tools/fix-aerial-home.py --rescue   # 黑屏救援：修完再把 Aerial 
 命中后做的事：
 
 1. 从 `getWindows()` 里挑出那个弹框窗口的根（无障碍配置里要带 `flagRetrieveInteractiveWindows`）
-2. 找到文字是 `Aerial` 的候选行，**点一次**（点它往上第一个可点的祖先，也就是整行容器）
-3. 等「仅此一次 / 始终 / 取消」从灰变亮（约 0.3~0.9 秒），点「仅此一次」
-4. 弹框自己 finish 并启动选中的候选，Aerial 到站
+2. 一次广度遍历，把 `Aerial` 候选行、「仅此一次」、「极米桌面」一起找出来（找齐就提前收手，每轮只遍历一遍树）
+3. 找到文字是 `Aerial` 的候选行，**点一次**（点它往上第一个可点的祖先，也就是整行容器）。按钮要等这一下之后才会从灰变亮
+4. 之后每 80 毫秒看一眼，**不等 `isEnabled()` 变 true，直接点「仅此一次」，返回 false 就下一轮再来**——这样"变亮的那个瞬间"就被抓住，不用多等一整轮
+5. 点中的同时立刻用 `startActivity` 自己把 Aerial 请上来，抢在弹框默认候选（极米桌面）真正画出来之前。无障碍服务本身豁免后台启动限制，不需要 overlay
 
-实测时间线（日志里的 `probe` 行）：
+实测时间线（日志里的 `probe` / `settle` 行，20 连按取范围）：
 
 ```
-+35~44ms    click row Aerial=true
-+323~414ms  click 仅此一次=true        ← 按钮已经亮了
-+951~1040ms check#2 front=app.orchard.tv
++0~1ms      click row Aerial=true
++106~126ms  click 仅此一次 (round 1)      ← 按钮已经亮了
++13ms       pull: start aerial right after click 仅此一次
++399~448ms  check#1 front=app.orchard.tv  ← 已经是 Aerial 了
 ```
 
-连按 5 次，5/5 回到 Aerial，全程零次返回键、零条首选记录写入。
+连按 20 次，20/20 回到 Aerial，全程零次返回键、零条首选记录写入；`cmd package resolve-activity` 前后都还是 `com.xgimi.xgimiframeworkui/.resolver.ResolverActivity`。
 
 几点要知道：
 
 - **不发返回键**。`performGlobalAction(GLOBAL_ACTION_BACK)` 永远发给当前有焦点的窗口，在第三方 app 里按主页键时这一下会先落到那个 app 身上，实测要卡几秒才回来；节点动作则是直达目标窗口，不管谁在前台
+- **「仅此一次」启动的是默认选中那一行**，也就是极米桌面——点候选行并不会让 `selected` 移到 Aerial（这条实测过很多次）。它不写任何首选记录；我们紧跟着自己启动 Aerial，所以极米桌面的界面根本没机会出现在屏幕上
 - **不用「始终」**。实测按「始终」写进记录的是默认选中的那一行，也就是极米桌面（`always="true"` 直接把它设成默认）。这个弹框的选中态只有真人按遥控器才会移动：点候选行改不了 `selected`，`ACTION_SELECT` 能改却会把三个按钮锁死成灰的，真实触摸在没有触摸屏的电视上会被丢掉。所以代码里没有「始终」这条路径，宁可点「仅此一次」
 - **只能点一次候选行**。按钮从灰变亮是有一小段延迟的，反复点会把这段过程一直重置，最后等不到按钮亮
 - **必须抢在被盖住之前动手**。弹框一旦被 Aerial 盖住，就从 `getWindows()` 里消失了，节点点击无从下手；这也是这套动作放在事件里 0 延迟执行、而不是先等几百毫秒的原因
+- 按钮变亮后 16 轮（80ms × 16 ≈ 1.3 秒）还点不动，就退化成点「取消」把这窗口关掉收尾，不盲点「始终」
 - `ACTION_DISMISS` 对极米这个 resolver 恒 false，`ACTION_CLOSE_SYSTEM_DIALOGS` 广播也推不动它，两条都实测过，代码里没留
 
 ## 局限
 
 
 - 黑屏后要等「开机流程走完 + 连续两次读数」，实测白屏认证通过后大约 10 秒左右恢复，这个时间跟机器快慢有关
-- 按主页键那一下，弹框还是会先出现几十毫秒，然后被点掉；从按下到 Aerial 到站实测 1.0~1.9 秒
+- 按主页键那一下，从按下到 Aerial 到站实测 0.40~0.45 秒（20 连按），弹框和极米桌面都没在屏幕上出现
 - 这个应用**不会**替你在弹框里点「始终」。想彻底不弹框只能人工按一次：右键切到 Aerial → 确定 → 始终，之后系统不再解析 HOME。自动化点它一定记到极米桌面，见上一节
 - 想开机和按主页键都不弹框，要写双 home（一条 `set=3` 不带 DEFAULT + 一条 `set=2` 带 DEFAULT，见 Aerial 的 issue #942）。双 home 也可能被固件随机丢掉，丢掉之后还是会黑，那就靠这个应用拉起来
 - 极米系统在解锁时会重写无障碍列表，有可能把本应用剔出去。授予 `WRITE_SECURE_SETTINGS` 之后它会自己写回来，没授予的话需要手动再开
@@ -171,7 +175,8 @@ adb shell run-as com.sln162.bootrescue cat /data/user_de/0/com.sln162.bootrescue
 | `aerial in front, done` | 桌面回来了，收工 |
 | `probe ...: chooser window at +Nms` | 找到了弹框窗口 |
 | `probe ...: click row Aerial=` | 点了 Aerial 那一行，按钮随后才会变亮 |
-| `probe ...: click 仅此一次=` | 点了「仅此一次」，弹框会自己结束并启动 Aerial |
+| `probe ...: click 仅此一次 at +Nms (round N)` | 按钮亮了那一下就点到了，`round` 是第几轮轮询 |
+| `pull: start aerial right after click 仅此一次` | 点完立刻自己拉起 Aerial，抢在极米桌面之前 |
 | `probe ...: 仅此一次 never enabled, click 取消=` | 一直没等到按钮变亮，退化成点「取消」收尾 |
 | `settle ...: check#N front=... at +Nms` | 第 N 次看前台是谁，用来看多快回到桌面 |
 | `watch: front=..., event missed, handle as chooser` | 事件漏了，看门狗按弹框处理 |
