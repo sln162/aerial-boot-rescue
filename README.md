@@ -1,47 +1,40 @@
-# 极米防黑屏
+# Aerial 主页直达
 
-极米电视（H3S / H5 / 神灯 L1 这一代，Android 9）装了第三方桌面 Aerial 之后，开机偶尔会**整块屏幕全黑**，什么都看不到，状态栏也没有，只有 adb 还能连上。必须手动按遥控或者拔电重来。
+<img src="docs/icon.png" width="72" align="left" hspace="12">
 
-这是个无障碍服务，开机那几分钟盯着窗口。如果系统开机流程已经走完、却连续两次看不到任何可用界面，就把 Aerial 拉起来，屏幕上给一句「电视刚才黑屏了」的提示，然后回到桌面。
+极米电视（H3S / H5 / 神灯 L1 这一代，Android 9）把 Aerial 当桌面用时，按主页键会先弹出系统的「用哪个桌面」选择框，卡几秒才回来，有时候直接卡住。
 
-最新 APK 在 [Releases](https://github.com/sln162/aerial-boot-rescue/releases) 页面下载。
+这个无障碍服务把框点掉，同时把 Aerial 送到前台，**从按下到回到桌面 0.4 秒**。开机黑屏那一下也兼顾兜一次。
 
-只想装上用，直接跳到 [装法](#装法)；想弄明白它为什么管用，从 [为什么会黑屏](#为什么会黑屏) 往后看。
+不写主屏幕记录、不发返回键、不停用极米原桌面、不需要设置双 home。
 
-## 为什么会黑屏
+![界面](docs/ui.png)
 
-极米系统查桌面「首选记录」有两套查法：
+## 解决什么
 
-- **开机时**用宽查询（只要 HOME），候选有三个：极米自己的桌面、Aerial、FallbackHome
-- **按主页键时**用标准查询（HOME + DEFAULT），候选还是这三个
+- **在别的 app 里按主页键，弹框卡几秒**：框一出现就点掉，接着直接拉起 Aerial
+- **双 home 规则会随机丢**：不靠记录，首选记录是零条也照常工作
+- **开机偶尔整屏全黑**：开机流程走完后连续两次看不到界面才兜底，正常开机不打扰
 
-记录得同时覆盖这两套候选才算数。只剩一条、或者被系统降级成空壳，开机时记录就被固件丢掉，系统解析落到 `com.xgimi.xgimiframeworkui/.resolver.ResolverActivity`，但选择框又没起来——结果就是一个窗口都没有，屏幕全黑。
+## 它有多快
 
-这是 Aerial 自己的 issue [#1357](https://github.com/pengchujin/aerial-tv/issues/1357)（H5）、[#1377](https://github.com/pengchujin/aerial-tv/issues/1377)（H3S）记录的现象，取证过程在那边。
+20 连按 20/20：
 
-配套的修法：Aerial 侧已经提了 PR [#1449](https://github.com/pengchujin/aerial-tv/pull/1449)，把这个兜底搬进 Aerial 自己的守护服务。作者合并发布之后，就不用再装这个额外应用。
+```
++0~1ms      click row Aerial=true
++106~126ms  click 仅此一次 (round 1)
++13ms       pull: start aerial right after click 仅此一次
++399~448ms  check#1 front=app.orchard.tv
+```
 
-## 它怎么工作
+弹框一出现就点中 Aerial 那一行（按钮这时才亮），亮了立刻点「仅此一次」，同一时刻自己把 Aerial 拉起来，抢在弹框默认候选（极米桌面）画出来之前。屏幕上不会看到极米桌面闪一下。
 
-一个无障碍服务，开机后每 1.5 秒看一眼当前前台是什么。
-
-判据全部来自系统状态，**没有任何「等多少秒」的写死时间**：
-
-- `init.svc.bootanim == "stopped"` 或 `sys.boot_completed == "1"` → 认为系统开机流程走完了
-- 走完之后，前台还是空的，或者停在 `FallbackHome` / `ResolverActivity`
-- **连续两次**都是这样 → 认定真黑屏 → 把 `app.orchard.tv` 拉到前台
-
-只要中途看到过一次 Aerial 在前台，就立刻收工，后面再也不管。所以正常开机的机器不会被误触发。
-
-还有两道刹车：
-
-- 只在开机 10 分钟内动作，超过就永久收工（日常重启服务时 uptime 早超了，不会乱动）
-- 从没在开机过程中看到 Aerial 之前，不会动手
+事件偶尔会漏，另有 1 秒一次的巡检补一次，实测 34 次里 2 次走这条路，同样 0.5 秒内到站。
 
 ## 装法
 
-1. 从 [Releases](https://github.com/sln162/aerial-boot-rescue/releases) 下载最新 APK。**先卸载旧的再装新的**，不要覆盖安装：调试签名每次构建可能不同，覆盖会直接失败
-2. 装完立刻用 adb 做这三条：
+1. 从 [Releases](https://github.com/sln162/aerial-boot-rescue/releases) 下 APK，覆盖安装失败就先卸载旧的（调试签名）
+2. adb 三条：
 
 ```
 pm grant com.sln162.bootrescue android.permission.WRITE_SECURE_SETTINGS
@@ -50,110 +43,34 @@ settings put secure enabled_accessibility_services \
 settings put secure accessibility_enabled 1
 ```
 
-3. 打开应用一次，确认「防黑屏」是绿点
+3. 打开一次应用，「运行状态」显示绿色「正常」就成了
 
-**`pm grant` 不是可选步骤。** 极米在解锁那一刻会重写无障碍列表，把第三方服务整条剔掉（实测只剩 `com.xgimi.duertts/...`）。没这个权限，服务被剔之后写不回去，这一次开机也许还能靠 `pull` 把桌面拉起来，但下一次开机就没人管了，等于装了个一次性的。
+`pm grant` 不是可选项：极米在解锁那一刻会重写无障碍列表，把第三方服务剔掉，没有这个权限服务写不回去。
 
-如果系统设置里能找到无障碍入口，手动打开也可以，但 `pm grant` 这一步别省。
+## 界面看什么
 
-## 装完怎么确认真的到位
-
-```
-adb shell settings get secure enabled_accessibility_services
-adb shell dumpsys activity services com.sln162.bootrescue | grep hasBound
-adb shell dumpsys package com.sln162.bootrescue | grep -A2 WRITE_SECURE_SETTINGS
-```
-
-三条依次应当是：串里包含 `com.sln162.bootrescue`、`hasBound=true`、`WRITE_SECURE_SETTINGS: granted=true`。少任何一条，开机那次就可能没人救。
-
-**让 AI 代装的话**，把上面这一节原样发给它，装完让它跑这三条自检，把输出贴回来核对。它照着跑就行，不需要它理解背后的机制。
-
-## 页面显示
-
-打开应用有两块状态。
-
-**第一块是防黑屏本身**：绿点是开着，红点是关着。
-
-**第二块是「主页规则」**，三种状态：
-
-| 显示 | 含义 |
+| 区块 | 内容 |
 |---|---|
-| 正常（绿） | 开机直接进桌面，按主页键也不弹 |
-| 只有一半（黄） | 开机能进桌面，按主页键会弹选择框 |
-| 没设置（红） | 开机会弹选择框，得手动选一下 |
+| 运行状态 | 正常 / 未运行 / 权限不全 |
+| 上次救黑屏 | 最近一次兜底的时间；没发生就是「还没发生过」，下面是累计次数 |
+| 主页规则 | 开机查询、主页键查询各自解析到谁，两处都是 ResolverActivity 就写「没设置双 home」 |
+| 按主页键 | 累计次数；最近 8 次带时间、`+Nms`、怎么处理的 |
+| 最近日志 | 日志末 10 行，长包名压成「极米弹框」「三项无障碍列表」 |
 
-判断方法是查两次「系统现在会选谁」：一次只有 HOME，一次 HOME + DEFAULT。两个都指向 `app.orchard.tv` 就是正常，任一个指向选择框就是有问题。只查询，不会真的弹框。
+开机不再弹任何页面，事后打开应用就能看到处理了几次。
 
 ## 它不做什么
 
-- **不写 HOME 首选记录**。写记录要 `SET_PREFERRED_APPLICATIONS` 签名级权限，普通应用、无障碍服务、DeviceOwner 都拿不到，只有 shell 有
-- **不接管主页键**。主页键交给系统解析，这个改不了
-- **不冻结、不禁用极米自带的桌面**。只把 Aerial 拉起来，不动任何系统组件
-- **不动其他应用**，只针对 `app.orchard.tv`
-
-## 想按主页键也不弹框（可选）
-
-只装这个 APK，开机不会再黑；但记录坏掉的状态下按主页键还是会弹一次选择框、等几秒才回来。想连这个也没有，得写双 home：两条 HOME 首选记录，一条覆盖开机用的宽查询（`MAIN+HOME`），一条覆盖按主页键用的标准查询（`MAIN+HOME+DEFAULT`）。
-
-仓库里带了脚本 `tools/fix-aerial-home.py`。它默认只检查记录，坏了才重写，全程不切任何界面：
-
-```
-python tools/fix-aerial-home.py            # 检查，坏了就修
-python tools/fix-aerial-home.py --rescue   # 黑屏救援：修完再把 Aerial 拉到前台
-```
-
-**只建议 H3S / 同代极米（Android 9 / m7642）用。** 脚本里的候选组件是 H3S 的路径（`com.xgimi.home`、`com.android.newsettings`），写入用的 Binder 事务号 70 / 71 也是这台固件上的。换机型、换固件，事务号可能就变了，写进去是一条对不上的记录。其它机型别跑。
-
-**跑之前先确认 adb 能连上这台机器。** 双 home 被固件作废之后的表现就是黑屏，恢复要靠 adb 重写记录或者 `am start` 拉起桌面；连不上就只能等它自己缓过来。
-
-## 按主页键弹的选择框，直接干掉它
-
-1.5 起，这个服务还多干一件事：**盯着 HOME 选择框，一出现就点掉它**。不点「始终」、不写记录，跟首选记录是两条独立的路。
-
-判据只看事件本身：`TYPE_WINDOW_STATE_CHANGED` 且包名/类名是
-
-- `com.xgimi.xgimiframeworkui` + 末尾 `.resolver.ResolverActivity`（极米自己的）
-- `android` + `com.android.internal.app.ResolverActivity`（AOSP 的）
-
-事件偶尔会漏（实测 10 次漏 2 次），所以另有 1 秒一次的看门狗：前台突然变成极米框架、或者前台是空的但窗口列表里还压着一个弹框，都会补一次。
-
-命中后做的事：
-
-1. 从 `getWindows()` 里挑出那个弹框窗口的根（无障碍配置里要带 `flagRetrieveInteractiveWindows`）
-2. 一次广度遍历，把 `Aerial` 候选行、「仅此一次」、「极米桌面」一起找出来（找齐就提前收手，每轮只遍历一遍树）
-3. 找到文字是 `Aerial` 的候选行，**点一次**（点它往上第一个可点的祖先，也就是整行容器）。按钮要等这一下之后才会从灰变亮
-4. 之后每 80 毫秒看一眼，**不等 `isEnabled()` 变 true，直接点「仅此一次」，返回 false 就下一轮再来**——这样"变亮的那个瞬间"就被抓住，不用多等一整轮
-5. 点中的同时立刻用 `startActivity` 自己把 Aerial 请上来，抢在弹框默认候选（极米桌面）真正画出来之前。无障碍服务本身豁免后台启动限制，不需要 overlay
-
-实测时间线（日志里的 `probe` / `settle` 行，20 连按取范围）：
-
-```
-+0~1ms      click row Aerial=true
-+106~126ms  click 仅此一次 (round 1)      ← 按钮已经亮了
-+13ms       pull: start aerial right after click 仅此一次
-+399~448ms  check#1 front=app.orchard.tv  ← 已经是 Aerial 了
-```
-
-连按 20 次，20/20 回到 Aerial，全程零次返回键、零条首选记录写入；`cmd package resolve-activity` 前后都还是 `com.xgimi.xgimiframeworkui/.resolver.ResolverActivity`。
-
-几点要知道：
-
-- **不发返回键**。`performGlobalAction(GLOBAL_ACTION_BACK)` 永远发给当前有焦点的窗口，在第三方 app 里按主页键时这一下会先落到那个 app 身上，实测要卡几秒才回来；节点动作则是直达目标窗口，不管谁在前台
-- **「仅此一次」启动的是默认选中那一行**，也就是极米桌面——点候选行并不会让 `selected` 移到 Aerial（这条实测过很多次）。它不写任何首选记录；我们紧跟着自己启动 Aerial，所以极米桌面的界面根本没机会出现在屏幕上
-- **不用「始终」**。实测按「始终」写进记录的是默认选中的那一行，也就是极米桌面（`always="true"` 直接把它设成默认）。这个弹框的选中态只有真人按遥控器才会移动：点候选行改不了 `selected`，`ACTION_SELECT` 能改却会把三个按钮锁死成灰的，真实触摸在没有触摸屏的电视上会被丢掉。所以代码里没有「始终」这条路径，宁可点「仅此一次」
-- **只能点一次候选行**。按钮从灰变亮是有一小段延迟的，反复点会把这段过程一直重置，最后等不到按钮亮
-- **必须抢在被盖住之前动手**。弹框一旦被 Aerial 盖住，就从 `getWindows()` 里消失了，节点点击无从下手；这也是这套动作放在事件里 0 延迟执行、而不是先等几百毫秒的原因
-- 按钮变亮后 16 轮（80ms × 16 ≈ 1.3 秒）还点不动，就退化成点「取消」把这窗口关掉收尾，不盲点「始终」
-- `ACTION_DISMISS` 对极米这个 resolver 恒 false，`ACTION_CLOSE_SYSTEM_DIALOGS` 广播也推不动它，两条都实测过，代码里没留
+- **不写 HOME 首选记录**，**不点「始终」**。这个弹框里「始终」写进的是默认选中那一行（极米桌面）；点候选行改不了 `selected`，`ACTION_SELECT` 能改但会把按钮锁死
+- **不发返回键**。返回键永远发给当前焦点窗口，在第三方 app 里按主页键时会落到那个 app 身上，实测卡几秒
+- **不冻结、不禁用极米自带桌面**，不动系统组件
 
 ## 局限
 
-
-- 黑屏后要等「开机流程走完 + 连续两次读数」，实测白屏认证通过后大约 10 秒左右恢复，这个时间跟机器快慢有关
-- 按主页键那一下，从按下到 Aerial 到站实测 0.40~0.45 秒（20 连按），弹框和极米桌面都没在屏幕上出现
-- 这个应用**不会**替你在弹框里点「始终」。想彻底不弹框只能人工按一次：右键切到 Aerial → 确定 → 始终，之后系统不再解析 HOME。自动化点它一定记到极米桌面，见上一节
-- 想开机和按主页键都不弹框，要写双 home（一条 `set=3` 不带 DEFAULT + 一条 `set=2` 带 DEFAULT，见 Aerial 的 issue #942）。双 home 也可能被固件随机丢掉，丢掉之后还是会黑，那就靠这个应用拉起来
-- 极米系统在解锁时会重写无障碍列表，有可能把本应用剔出去。授予 `WRITE_SECURE_SETTINGS` 之后它会自己写回来，没授予的话需要手动再开
+- 选「仅此一次」之后弹框会启动默认那一行（极米桌面），我们紧接着自己拉起 Aerial 盖掉；这一步靠无障碍服务的后台启动豁免
+- 个别时候到站 0.6 秒
+- 弹框被 Aerial 完整盖住后节点就从 `getWindows()` 里消失，所以动作放在事件里 0 延迟执行
+- 只对极米这一代固件调过，AOSP 的 `ResolverActivity` 也留了分支，未实测
 
 ## 日志
 
@@ -161,29 +78,6 @@ python tools/fix-aerial-home.py --rescue   # 黑屏救援：修完再把 Aerial 
 adb shell run-as com.sln162.bootrescue cat /data/user_de/0/com.sln162.bootrescue/files/rescue.log
 ```
 
-关心的几行：
-
-| 日志 | 含义 |
-|---|---|
-| `bound, uptime=` | 服务绑上了 |
-| `bound: no chooser window yet` | 绑上那一刻查了一眼，没有弹框（开机那种情况看这行） |
-| `bound: chooser already up at uptime=` | 绑上那一刻弹框已经在了，直接处理 |
-| `still booting (bootanim=...)` | 系统还在开机（白屏、动画、认证），等待，不动手 |
-| `boot finished but no usable window (1/2, front=...)` | 开机流程走完，但没看到可用界面，开始计数 |
-| `boot finished and still nothing ... pulling aerial` | 连续两次都空，拉 Aerial |
-| `boot tip shown` | 提醒页弹出来了 |
-| `aerial in front, done` | 桌面回来了，收工 |
-| `probe ...: chooser window at +Nms` | 找到了弹框窗口 |
-| `probe ...: click row Aerial=` | 点了 Aerial 那一行，按钮随后才会变亮 |
-| `probe ...: click 仅此一次 at +Nms (round N)` | 按钮亮了那一下就点到了，`round` 是第几轮轮询 |
-| `pull: start aerial right after click 仅此一次` | 点完立刻自己拉起 Aerial，抢在极米桌面之前 |
-| `probe ...: 仅此一次 never enabled, click 取消=` | 一直没等到按钮变亮，退化成点「取消」收尾 |
-| `settle ...: check#N front=... at +Nms` | 第 N 次看前台是谁，用来看多快回到桌面 |
-| `watch: front=..., event missed, handle as chooser` | 事件漏了，看门狗按弹框处理 |
-| `watch: front=null but chooser window alive, handle it` | 前台黑着但弹框还压着，看门狗补一次 |
-
 ## 构建
 
-代码就是仓库里的普通源文件，workflow 只做编译打包，不生成代码。
-
-Actions → `build-apk` → Run workflow，跑完在 artifacts 下拿 `BootRescue-<版本>.zip`。版本号改 `app/build.gradle` 里的 `versionCode` / `versionName`。
+改动版本号在 `app/build.gradle` 的 `versionCode` / `versionName`，本地 `python build.py` 或 Actions 的 `build-apk` 打包。

@@ -35,6 +35,12 @@ public class BootA11yService extends AccessibilityService {
 
     private static long LAST_ENSURE = 0L;
     private static volatile boolean WRITING = false;
+    /** 服务真的被系统绑上了没有。界面拿它判断"在不在运行"，比只看无障碍开关可靠 */
+    private static volatile boolean BOUND = false;
+
+    static boolean isBound() {
+        return BOUND;
+    }
 
     private Handler handler;
     private long startedAt;
@@ -58,6 +64,7 @@ public class BootA11yService extends AccessibilityService {
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
+        BOUND = true;
         handler = new Handler(Looper.getMainLooper());
         startedAt = SystemClock.elapsedRealtime();
         log("bound, uptime=" + startedAt + "ms");
@@ -217,8 +224,10 @@ public class BootA11yService extends AccessibilityService {
                 handler.postDelayed(this, CHECK_MS);
                 return;
             }
-            // 开机动画已经收掉了，还看不到界面：这种情况才算"该出来没出来"
-            boolean stuck = front == null || isFallbackOrResolver(front);
+            // 开机动画已经收掉了，还看不到界面：这种情况才算"该出来没出来"。
+            // 注意只认 front==null：极米设置（newsettings）在前台是有人自己打开的，不是黑屏，
+            // 早先把 newsettings 也算成"卡住"，结果用户开着设置页就被拉回桌面、还多记一次"救黑屏"。
+            boolean stuck = front == null;
             if (!stuck) {
                 stall = 0;
                 log("boot finished, front=" + front + ", leave alone");
@@ -226,8 +235,16 @@ public class BootA11yService extends AccessibilityService {
                 return;
             }
             stall++;
-            log("boot finished but no usable window (" + stall + "/2, front=" + front + ")");
+            log("boot finished but no usable window (" + stall + "/2, front=null)");
             if (stall >= 2) {
+                // 同一次开机只救一次：服务被重新绑定（装包、改无障碍列表）会重开轮询，
+                // 不记住就会被拉两次、还记两次"救黑屏"。
+                long last = prefs().getLong("boot_pull_at", 0);
+                if (last > 0 && now - last < 300000L) {
+                    log("already pulled this boot (" + (now - last) + "ms ago), skip");
+                    return;
+                }
+                prefs().edit().putLong("boot_pull_at", now).apply();
                 log("boot finished and still nothing, aerial never in front, pulling aerial");
                 pull();
                 return;
@@ -235,6 +252,10 @@ public class BootA11yService extends AccessibilityService {
             handler.postDelayed(this, CHECK_MS);
         }
     };
+
+    private android.content.SharedPreferences prefs() {
+        return createDeviceProtectedStorageContext().getSharedPreferences("guard", android.content.Context.MODE_PRIVATE);
+    }
 
     /** 系统开机流程走完了没有：开机动画收掉，或者系统自己置了 boot_completed。跟时长无关。 */
     private boolean bootFinished() {
@@ -283,11 +304,8 @@ public class BootA11yService extends AccessibilityService {
             i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_CLS));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             startActivity(i);
-            // 画面救回来之后，弹一次提醒页。只排一次，否则黑屏那几秒会被重复排多次、反复闪
-            if (!tipPending) {
-                tipPending = true;
-                handler.postDelayed(tipRun, 3000);
-            }
+            // 开机不再弹自己的界面，只在计数里留下这一次（打开应用就能看到"上次救黑屏"）
+            Stats.rescue(this);
         } catch (Throwable t) {
             log("startActivity failed: " + t);
         }
@@ -365,24 +383,6 @@ public class BootA11yService extends AccessibilityService {
         overlay = null;
     }
 
-
-    private boolean tipPending = false;
-
-    private final Runnable tipRun = new Runnable() {
-        @Override
-        public void run() {
-            try {
-                Intent i = new Intent();
-                i.setClassName(getPackageName(), "com.sln162.bootrescue.MainActivity");
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                i.putExtra("boot_tip", true);
-                startActivity(i);
-                log("boot tip shown");
-            } catch (Throwable t) {
-                log("tip failed: " + t);
-            }
-        }
-    };
 
     private static final String XGIMI_FW = "com.xgimi.xgimiframeworkui";
     /** 极米原桌面：弹框默认选中的就是它，被它顶上来不算到站 */
@@ -544,6 +544,7 @@ public class BootA11yService extends AccessibilityService {
                 log("probe " + who + ": 仅此一次 never enabled, click 取消=" + c + " at +"
                         + (SystemClock.elapsedRealtime() - at) + "ms");
                 if (c) {
+                    Stats.home(BootA11yService.this, SystemClock.elapsedRealtime() - at, "取消兜底");
                     scheduleSettle(who, at);
                 }
             } catch (Throwable t) {
@@ -669,6 +670,9 @@ public class BootA11yService extends AccessibilityService {
     }
 
     /** 点完之后核对前台；Aerial 没上来且没人用设备时就把它请上来 */
+    /** 一次处理只记一条统计：按 et 去重，避免 Settle 每轮都记 */
+    private long recAt = 0L;
+
     private final class Settle implements Runnable {
         private final String who;
         private final long at;
@@ -687,6 +691,11 @@ public class BootA11yService extends AccessibilityService {
             log("settle " + who + ": check#" + n + " front=" + front + " at +" + ms + "ms");
             if (AERIAL_PKG.equals(front)) {
                 hideOverlay();
+                if (recAt != at) {
+                    recAt = at;
+                    Stats.home(BootA11yService.this, ms,
+                            who != null && who.startsWith("watch") ? "看门狗补" : "点仅此一次");
+                }
                 return;
             }
             // 用户自己开起了别的 app（不是极米系）就别抢了
@@ -806,6 +815,18 @@ public class BootA11yService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
+    }
+
+    @Override
+    public void onDestroy() {
+        BOUND = false;
+        super.onDestroy();
+    }
+
+    @Override
+    public boolean onUnbind(android.content.Intent intent) {
+        BOUND = false;
+        return super.onUnbind(intent);
     }
 
     private void log(String msg) {

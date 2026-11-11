@@ -10,8 +10,8 @@ android {
         applicationId "com.sln162.bootrescue"
         minSdk 23
         targetSdk 28
-        versionCode 55
-        versionName "1.9.1"
+        versionCode 56
+        versionName "1.9.2"
     }
 
     buildTypes {

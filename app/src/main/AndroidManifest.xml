@@ -6,7 +6,10 @@
 
     <application
         android:allowBackup="false"
-        android:label="极米防黑屏">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:label="Aerial 主页直达">
 
         <service
             android:name=".BootA11yService"
