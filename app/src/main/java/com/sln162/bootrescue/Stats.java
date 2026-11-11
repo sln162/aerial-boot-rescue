@@ -17,6 +17,7 @@ final class Stats {
     private static final String KEY_HOME_RECENT = "home_recent";
     private static final String KEY_RESCUE_AT = "rescue_at";
     private static final String KEY_RESCUE_COUNT = "rescue_count";
+    private static final String KEY_THEME = "theme";
     private static final int KEEP = 8;
 
     private Stats() {
@@ -92,6 +93,22 @@ final class Stats {
             return sp(c).getInt(KEY_RESCUE_COUNT, 0);
         } catch (Throwable t) {
             return 0;
+        }
+    }
+
+    /** 配色：1 墨绿 / 2 米白 / 3 深蓝，按了左右键就存下来 */
+    static int themeIndex(Context c, int def) {
+        try {
+            return sp(c).getInt(KEY_THEME, def);
+        } catch (Throwable t) {
+            return def;
+        }
+    }
+
+    static void setThemeIndex(Context c, int v) {
+        try {
+            sp(c).edit().putInt(KEY_THEME, v).apply();
+        } catch (Throwable ignored) {
         }
     }
 }

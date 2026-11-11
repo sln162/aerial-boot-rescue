@@ -691,7 +691,8 @@ public class BootA11yService extends AccessibilityService {
             log("settle " + who + ": check#" + n + " front=" + front + " at +" + ms + "ms");
             if (AERIAL_PKG.equals(front)) {
                 hideOverlay();
-                if (recAt != at) {
+                // 超过 10 秒的样本是设备睡过去把 Handler 冻住造成的，记了会污染统计
+                if (recAt != at && ms <= 10000L) {
                     recAt = at;
                     Stats.home(BootA11yService.this, ms,
                             who != null && who.startsWith("watch") ? "看门狗补" : "点仅此一次");

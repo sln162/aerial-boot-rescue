@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
@@ -26,8 +27,11 @@ import java.io.InputStreamReader;
  */
 public class MainActivity extends Activity {
 
-    /** 1 深色墨绿 / 2 浅色米白 / 3 深蓝 */
-    private static final int PALETTE = 2;
+    /** 1 深色墨绿 / 2 浅色米白 / 3 深蓝；默认深蓝，按左右键切换并记住 */
+    private static final int THEME_DEFAULT = 3;
+    private static final String[] THEME_NAMES = {"墨绿", "米白", "深蓝"};
+
+    private int theme = THEME_DEFAULT;
 
     private int bg;
     private int fg;
@@ -39,7 +43,11 @@ public class MainActivity extends Activity {
     private int warn;
 
     private void palette() {
-        if (PALETTE == 2) {
+        theme = Stats.themeIndex(this, THEME_DEFAULT);
+        if (theme < 1 || theme > 3) {
+            theme = THEME_DEFAULT;
+        }
+        if (theme == 2) {
             bg = Color.parseColor("#F3F6F4");
             fg = Color.parseColor("#12211B");
             dim = Color.parseColor("#4E6359");
@@ -48,7 +56,7 @@ public class MainActivity extends Activity {
             red = Color.parseColor("#C94F4F");
             lineColor = Color.parseColor("#DCE5E1");
             warn = Color.parseColor("#B7791F");
-        } else if (PALETTE == 3) {
+        } else if (theme == 3) {
             bg = Color.parseColor("#0D1B26");
             fg = Color.parseColor("#E8F3F7");
             dim = Color.parseColor("#83A3B4");
@@ -91,6 +99,25 @@ public class MainActivity extends Activity {
 
     private boolean built;
 
+    /** 遥控器左右键换配色：左一个、右一个循环，换完立刻生效并存下来 */
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            int next = theme + (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
+            if (next < 1) {
+                next = THEME_NAMES.length;
+            } else if (next > THEME_NAMES.length) {
+                next = 1;
+            }
+            theme = next;
+            Stats.setThemeIndex(this, next);
+            palette();
+            build();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
     private void build() {
         boolean on = a11yOn();
         boolean bound = on && BootA11yService.isBound();
@@ -109,6 +136,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         page.addView(header(bound && secure));
+        page.addView(themeHintBlock());
 
         // 两列：左边状态 / 规则，右边记录 / 日志
         LinearLayout cols = new LinearLayout(this);
@@ -184,6 +212,19 @@ public class MainActivity extends Activity {
 
         setContentView(scroll);
         built = true;
+    }
+
+    /** 标题下面一行：当前配色 + 怎么切换 */
+    private View themeHintBlock() {
+        TextView t = new TextView(this);
+        t.setText("配色：" + THEME_NAMES[theme - 1] + "   ·   按遥控器左右键切换，自动保存");
+        t.setTextColor(dim);
+        t.setTextSize(15);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(14);
+        t.setLayoutParams(lp);
+        return t;
     }
 
     private View header(boolean on) {
