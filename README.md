@@ -106,7 +106,43 @@ python tools/fix-aerial-home.py --rescue   # 黑屏救援：修完再把 Aerial 
 
 **跑之前先确认 adb 能连上这台机器。** 双 home 被固件作废之后的表现就是黑屏，恢复要靠 adb 重写记录或者 `am start` 拉起桌面；连不上就只能等它自己缓过来。
 
+## 按主页键弹的选择框，直接干掉它
+
+1.4.0 起，这个服务还多干一件事：**盯着 HOME 选择框，一出现就关掉**。不点「始终」、不写记录，跟首选记录是两条独立的路。
+
+判据只看事件本身：`TYPE_WINDOW_STATE_CHANGED` 且包名/类名是
+
+- `com.xgimi.xgimiframeworkui` + 末尾 `.resolver.ResolverActivity`（极米自己的）
+- `android` + `com.android.internal.app.ResolverActivity`（AOSP 的）
+
+命中后立刻做，全程不遍历列表、不点任何一行：
+
+| 动作 | H3S 实测 |
+|---|---|
+| `performAction(ACTION_DISMISS)` | **false**。极米这个 resolver 的根节点是 `android.widget.FrameLayout`，不支持 dismiss |
+| `performGlobalAction(GLOBAL_ACTION_BACK)` | true，弹框关掉 |
+| `startActivity(app.orchard.tv)` | 弹框关掉后立刻请求 Aerial |
+
+四次按主页键的实测时间线（日志里的 `chooser` 行）：
+
+```
++18~41ms   ACTION_DISMISS=false        （每次都 false，这条路在 H3S 上不成立）
++26~57ms   BACK=true
++247~347ms 前台为空（切换过程中）
++653~888ms 前台=app.orchard.tv         ← 桌面真的回来了
+```
+
+也就是说：**弹框出现到底，桌面回来不到 1 秒**。原来那种「按主页键卡十几秒、屏幕黑着」的状态没有了，也不用去点「始终」。
+
+几点要知道：
+
+- 弹框还是会先出现一瞬（几十毫秒），只是没人看见；它不会停留在那里等选中
+- 这个动作与首选记录完全无关，**记录坏了也照常工作**，所以重启之后记录被固件丢掉，也不再影响按主页键
+- `ACTION_DISMISS` 在这台机器上是死路，代码里保留它只是兜底，真正生效的是 BACK
+- 关闭之后必须再 `startActivity` 才有桌面：弹框关掉只是回到进弹框之前那个应用，不会自动回 Aerial
+
 ## 局限
+
 
 - 黑屏后要等「开机流程走完 + 连续两次读数」，实测白屏认证通过后大约 10 秒左右恢复，这个时间跟机器快慢有关
 - 记录坏掉之后，按主页键还是会弹选择框或者卡几秒。这个救不了，只能靠页面上「主页规则」看到状态，自己按下面两种方式修
@@ -129,6 +165,9 @@ adb shell run-as com.sln162.bootrescue cat /data/user_de/0/com.sln162.bootrescue
 | `boot finished and still nothing ... pulling aerial` | 连续两次都空，拉 Aerial |
 | `boot tip shown` | 提醒页弹出来了 |
 | `aerial in front, done` | 桌面回来了，收工 |
+| `chooser ... ACTION_DISMISS=` | 抓到 HOME 选择框，先试 dismiss，记返回值 |
+| `chooser ... BACK=` | dismiss 不支持，退回 BACK |
+| `chooser ... front=... at +Nms` | 弹框之后第 N 毫秒时前台是谁，用来看多快回到桌面 |
 
 ## 构建
 

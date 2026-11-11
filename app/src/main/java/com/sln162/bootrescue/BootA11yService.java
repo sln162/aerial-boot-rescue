@@ -265,6 +265,19 @@ public class BootA11yService extends AccessibilityService {
         }
     }
 
+    /** 处理选择框时用：只把 Aerial 拉到前台，不弹提醒页 */
+    private void pullQuiet() {
+        try {
+            Intent i = new Intent();
+            i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_CLS));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            startActivity(i);
+        } catch (Throwable t) {
+            log("pullQuiet failed: " + t);
+        }
+    }
+
+
     private boolean tipPending = false;
 
     private final Runnable tipRun = new Runnable() {
@@ -283,8 +296,96 @@ public class BootA11yService extends AccessibilityService {
         }
     };
 
+    private static final String XGIMI_FW = "com.xgimi.xgimiframeworkui";
+    private static final String ANDROID_FW = "android";
+    private static final String AOSP_CHOOSER = "com.android.internal.app.ResolverActivity";
+    /** 连续事件冷却：typeWindowContentChanged 会连刷，3 秒内只处理一次 */
+    private static final long CHOOSER_COOLDOWN_MS = 3000L;
+    private long chooserAt = 0L;
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event == null || event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            return;
+        }
+        CharSequence p = event.getPackageName();
+        CharSequence c = event.getClassName();
+        if (p == null || c == null) {
+            return;
+        }
+        String pkg = p.toString();
+        String cls = c.toString();
+        if (!isHomeChooser(pkg, cls)) {
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (now - chooserAt < CHOOSER_COOLDOWN_MS) {
+            return;
+        }
+        chooserAt = now;
+        killChooser(pkg + "/" + cls, now);
+    }
+
+    /** HOME 选择框：极米自己的，或安卓自己的 */
+    private boolean isHomeChooser(String pkg, String cls) {
+        if (XGIMI_FW.equals(pkg) && cls.endsWith(".resolver.ResolverActivity")) {
+            return true;
+        }
+        return ANDROID_FW.equals(pkg) && AOSP_CHOOSER.equals(cls);
+    }
+
+    /**
+     * 选择框一出现就干掉它，不点"始终"、不遍历列表。
+     * 先试 ACTION_DISMISS；不支持就退回 BACK；不管哪种都立刻请求 Aerial。
+     * 全程写时间戳，用来量"从事件到 Aerial 到前台"到底多少毫秒。
+     */
+    private void killChooser(String who, long eventAt) {
+        try {
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                log("chooser " + who + ": root=null, cannot act");
+                return;
+            }
+            String rootPkg = root.getPackageName() == null ? "?" : root.getPackageName().toString();
+            String rootCls = root.getClassName() == null ? "?" : root.getClassName().toString();
+            boolean dismiss = root.performAction(AccessibilityNodeInfo.ACTION_DISMISS);
+            log("chooser " + who + ": root=" + rootPkg + "/" + rootCls
+                    + " ACTION_DISMISS=" + dismiss
+                    + " at +" + (SystemClock.elapsedRealtime() - eventAt) + "ms");
+            try {
+                root.recycle();
+            } catch (Throwable ignored) {
+            }
+            if (!dismiss) {
+                boolean back = performGlobalAction(GLOBAL_ACTION_BACK);
+                log("chooser " + who + ": BACK=" + back
+                        + " at +" + (SystemClock.elapsedRealtime() - eventAt) + "ms");
+            }
+            // 弹框没了不等于回到桌面，仍然要把 Aerial 拉起来
+            pullQuiet();
+            final long at = eventAt;
+            final String tag = who;
+            if (handler == null) {
+                return;
+            }
+            // 采样前台变化，量"从事件到 Aerial 真的到前台"用了多久
+            handler.postDelayed(new Runnable() {
+                private int step = 0;
+                private final long[] marks = {200L, 400L, 800L, 1600L, 2400L, 3600L};
+
+                @Override
+                public void run() {
+                    long elapsedMs = SystemClock.elapsedRealtime() - at;
+                    log("chooser " + tag + ": front=" + frontPackage() + " at +" + elapsedMs + "ms");
+                    if (step < marks.length - 1) {
+                        step++;
+                        handler.postDelayed(this, marks[step] - elapsedMs);
+                    }
+                }
+            }, 200L);
+        } catch (Throwable t) {
+            log("chooser " + who + " failed: " + t);
+        }
     }
 
     @Override
