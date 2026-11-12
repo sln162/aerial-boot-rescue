@@ -32,6 +32,8 @@ import java.util.Locale;
 public class BootA11yService extends AccessibilityService {
     private static final String AERIAL_PKG = "app.orchard.tv";
     private static final String AERIAL_CLS = "app.orchard.tv.MainActivity";
+    /** Aerial 自己的守护服务；极米重写列表时会连它一起剔掉，这里补回去 */
+    private static final String AERIAL_GUARD = "app.orchard.tv/app.orchard.tv.guard.HomeGuardService";
     private static final long WINDOW_MS = 180000L;
     private static final long CHECK_MS = 2000L;
     // 开机动画服务。stopped 说明系统已经把开机画面收掉，该显示界面了，跟过了多少秒无关
@@ -147,22 +149,38 @@ public class BootA11yService extends AccessibilityService {
             String flat = me.flattenToString();
             String cur = readList(context);
             logLine(context, "ensure cur=" + (cur == null ? "null" : cur));
-            if (cur != null && cur.contains(flat)) {
+            // 极米在解锁那一刻会把列表整个重写，第三方服务（我们自己、Aerial 的守护）都会被剔掉。
+            // 两个都得补回去：少了 Aerial 的守护，Aerial 被系统杀掉/开机没起来时就没人再拉它。
+            boolean hasSelf = cur != null && cur.contains(flat);
+            boolean hasGuard = cur != null && cur.contains("app.orchard.tv/");
+            if (hasSelf && hasGuard) {
                 return;
             }
-            String next = (cur == null || cur.isEmpty()) ? flat : cur + ":" + flat;
+            StringBuilder next = new StringBuilder(cur == null ? "" : cur);
+            if (!hasSelf) {
+                if (next.length() > 0) {
+                    next.append(':');
+                }
+                next.append(flat);
+            }
+            if (!hasGuard) {
+                if (next.length() > 0) {
+                    next.append(':');
+                }
+                next.append(AERIAL_GUARD);
+            }
             WRITING = true;
             boolean ok;
             try {
-                ok = writeList(context, next);
+                ok = writeList(context, next.toString());
                 if (!ok) {
-                    ok = writeList(context.createDeviceProtectedStorageContext(), next);
+                    ok = writeList(context.createDeviceProtectedStorageContext(), next.toString());
                 }
             } finally {
                 WRITING = false;
             }
             if (ok) {
-                logLine(context, "restored self into a11y list");
+                logLine(context, "restored a11y list (self=" + !hasSelf + ", aerialGuard=" + !hasGuard + ")");
                 // 刚把自己写回列表的这几秒里事件最容易丢，记下来让看门狗临时加密
                 RESTORED_AT = SystemClock.elapsedRealtime();
             }
@@ -257,8 +275,10 @@ public class BootA11yService extends AccessibilityService {
             if (stall >= 2) {
                 // 同一次开机只救一次：服务被重新绑定（装包、改无障碍列表）会重开轮询，
                 // 不记住就会被拉两次、还记两次"救黑屏"。
+                // 这个记号存的是 elapsedRealtime（开机后从 0 数），重启会归零，
+                // 所以 last > now 说明它是上一次开机留下的，不能当成"这次已经拉过"。
                 long last = prefs().getLong("boot_pull_at", 0);
-                if (last > 0 && now - last < 300000L) {
+                if (last > 0 && last <= now && now - last < 300000L) {
                     log("already pulled this boot (" + (now - last) + "ms ago), skip");
                     return;
                 }
