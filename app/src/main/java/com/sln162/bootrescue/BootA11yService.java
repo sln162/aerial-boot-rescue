@@ -1,10 +1,15 @@
 package com.sln162.bootrescue;
 
 import android.accessibilityservice.AccessibilityService;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.database.ContentObserver;
 import android.graphics.PixelFormat;
 import android.os.Handler;
@@ -70,6 +75,17 @@ public class BootA11yService extends AccessibilityService {
         log("bound, uptime=" + startedAt + "ms");
         ensureSelf(this, true);
         watchSettings();
+        // 只关心框里那两个包：Aerial 后装、或者被升级之后，缓存的标签要重读
+        try {
+            IntentFilter packFilter = new IntentFilter();
+            packFilter.addAction(Intent.ACTION_PACKAGE_ADDED);
+            packFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
+            packFilter.addAction(Intent.ACTION_PACKAGE_REPLACED);
+            packFilter.addDataScheme("package");
+            registerReceiver(packChanges, packFilter);
+        } catch (Throwable t) {
+            log("pack receiver failed: " + t);
+        }
         handler.postDelayed(tick, CHECK_MS);
         handler.postDelayed(watch, WATCH_MS);
         // 刚绑上就先看一眼：开机那次的弹框如果这会儿还在，立刻点掉
@@ -397,6 +413,71 @@ public class BootA11yService extends AccessibilityService {
     private static final int ONCE_MAX_ROUND = 16;
     private long chooserAt = 0L;
 
+    /**
+     * 弹框里"哪一行是 Aerial、哪个按钮是仅此一次"不靠写死中文：
+     * 行名用系统给的应用标签（随系统语言变），按钮先认控件 ID（button_once 与语言无关），
+     * 两条都认不来时才退回写死的文字。标签第一次用到才读，读到就缓存，不占每轮的时间。
+     */
+    private static final long LABEL_RETRY_MS = 3000L;
+    private final java.util.HashMap<String, String> labels = new java.util.HashMap<>();
+    private final java.util.HashMap<String, Long> labelRetryAt = new java.util.HashMap<>();
+
+    /** 某个包在弹框里显示的名字；读不到返回 null，调用方退回旧的文字判据 */
+    private String labelOf(String pkg) {
+        String cached = labels.get(pkg);
+        if (cached != null) {
+            return cached;
+        }
+        long now = SystemClock.elapsedRealtime();
+        Long retryAt = labelRetryAt.get(pkg);
+        if (retryAt != null && now < retryAt) {
+            return null;
+        }
+        labelRetryAt.put(pkg, now + LABEL_RETRY_MS);
+        try {
+            PackageManager pm = getPackageManager();
+            ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+            CharSequence label = ai == null ? null : pm.getApplicationLabel(ai);
+            String s = label == null ? null : label.toString().trim();
+            if (s != null && s.length() > 0) {
+                labels.put(pkg, s);
+                log("label: " + pkg + " -> \"" + s + "\"");
+                return s;
+            }
+        } catch (Throwable t) {
+            // 包还没装：不作数，等它装好（下面的广播会清缓存）或者冷却后再读
+        }
+        return null;
+    }
+
+    /** 装/卸 Aerial、换系统语言之后标签会变，清掉重读一次 */
+    private void invalidateLabels(String why) {
+        labels.clear();
+        labelRetryAt.clear();
+        log("label: cleared (" + why + ")");
+    }
+
+    /** 框里的 APK 装上了/换了/卸了：清掉缓存的标签，下次弹框重新读 */
+    private final BroadcastReceiver packChanges = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String pkg = intent == null ? null : intent.getData() == null
+                    ? null : intent.getData().getSchemeSpecificPart();
+            if (pkg == null || (!AERIAL_PKG.equals(pkg) && !XGIMI_HOME.equals(pkg))) {
+                return;
+            }
+            invalidateLabels(pkg + " " + (intent.getAction() == null ? "" : intent.getAction()));
+        }
+    };
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // 换语言/换区域的标签是另一个字符串，缓存作废
+        invalidateLabels("configuration changed");
+    }
+
+
     /** 事件偶尔会漏（实测 10 次漏 2 次），所以再加一个 1 秒一次的看门狗兜底 */
     private static final long WATCH_MS = 1000L;
     private static final long WATCH_CHOOSER_GAP_MS = 4000L;
@@ -563,6 +644,8 @@ public class BootA11yService extends AccessibilityService {
                     log("probe " + who + ": Aerial[" + rowState(h.aerialRow) + "] 极米桌面["
                             + rowState(h.xgimiRow) + "] 仅此一次enabled="
                             + (h.once != null && h.once.isEnabled()) + " at +" + ms + "ms");
+                    log("probe " + who + ": match aerial=" + h.aerialVia
+                            + " xgimi=" + h.xgimiVia + " once=" + h.onceVia + " at +" + ms + "ms");
                     boolean rowClick = clickUp(h.aerialRow);
                     log("probe " + who + ": click row Aerial=" + rowClick + " at +" + ms + "ms");
                     if (handler != null) {
@@ -585,6 +668,9 @@ public class BootA11yService extends AccessibilityService {
                 }
                 // 一直等不到按钮变亮：宁可点"取消"把这个窗口关掉，也不盲点"始终"记错桌面
                 AccessibilityNodeInfo cancel = findByText(root, "取消", true);
+                if (cancel == null) {
+                    cancel = findByText(root, "Cancel", true);
+                }
                 boolean c = clickUp(cancel);
                 log("probe " + who + ": 仅此一次 never enabled, click 取消=" + c + " at +"
                         + (SystemClock.elapsedRealtime() - at) + "ms");
@@ -608,12 +694,27 @@ public class BootA11yService extends AccessibilityService {
         AccessibilityNodeInfo aerialRow;
         AccessibilityNodeInfo xgimiRow;
         AccessibilityNodeInfo once;
+        /** 这一轮是靠什么认出来的：id / label / text，写进日志方便以后排查 */
+        String aerialVia;
+        String xgimiVia;
+        String onceVia;
     }
 
-    /** 一次广度遍历，把 Aerial 行 / 极米桌面行 / 仅此一次 全找出来，找齐就提前收手 */
+    /** AOSP 的选择框按钮 ID 是 android:id/button_once；厂商定制版前缀不同，按这个名字认 */
+    private static boolean isOnceId(String vid) {
+        return vid != null && vid.contains("button_once");
+    }
+
+    /**
+     * 一次广度遍历，把 Aerial 行 / 极米桌面行 / 仅此一次 全找出来，找齐就提前收手。
+     * 认出哪个节点不写死中文：行用系统给的应用标签（跟着语言走），按钮先认控件 ID，
+     * 都对不上才落回写死的文字——所以换语言、换品牌时不会先崩掉，只是退到旧判据。
+     */
     private void scanChooser(AccessibilityNodeInfo root, Holder h) {
         java.util.ArrayDeque<AccessibilityNodeInfo> queue = new java.util.ArrayDeque<>();
         queue.add(root);
+        String aerialLabel = labelOf(AERIAL_PKG);
+        String xgimiLabel = labelOf(XGIMI_HOME);
         AccessibilityNodeInfo aerialText = null;
         AccessibilityNodeInfo xgimiText = null;
         AccessibilityNodeInfo onceText = null;
@@ -626,13 +727,32 @@ public class BootA11yService extends AccessibilityService {
             String text = node.getText() == null ? null : node.getText().toString();
             String desc = node.getContentDescription() == null
                     ? null : node.getContentDescription().toString();
-            if (aerialText == null && (matches(text, desc, "Aerial", false))) {
-                aerialText = node;
-            } else if (xgimiText == null && matches(text, desc, "极米桌面", false)) {
-                xgimiText = node;
+            String vid = node.getViewIdResourceName();
+            if (onceText == null && isOnceId(vid)) {
+                onceText = node;
+                h.onceVia = "id:" + vid;
             } else if (onceText == null
                     && (matches(text, desc, "仅此一次", true) || matches(text, desc, "仅一次", true))) {
                 onceText = node;
+                h.onceVia = "text";
+            }
+            if (aerialText == null) {
+                if (aerialLabel != null && matches(text, desc, aerialLabel, false)) {
+                    aerialText = node;
+                    h.aerialVia = "label:\"" + aerialLabel + "\"";
+                } else if (matches(text, desc, "Aerial", false)) {
+                    aerialText = node;
+                    h.aerialVia = "text";
+                }
+            }
+            if (xgimiText == null) {
+                if (xgimiLabel != null && matches(text, desc, xgimiLabel, false)) {
+                    xgimiText = node;
+                    h.xgimiVia = "label:\"" + xgimiLabel + "\"";
+                } else if (matches(text, desc, "极米桌面", false)) {
+                    xgimiText = node;
+                    h.xgimiVia = "text";
+                }
             }
             if (aerialText != null && xgimiText != null && onceText != null) {
                 break;
@@ -866,6 +986,10 @@ public class BootA11yService extends AccessibilityService {
     @Override
     public void onDestroy() {
         BOUND = false;
+        try {
+            unregisterReceiver(packChanges);
+        } catch (Throwable ignored) {
+        }
         super.onDestroy();
     }
 
