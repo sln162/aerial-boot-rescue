@@ -29,10 +29,10 @@ jobs:
       - name: Rename APK
         run: |
           cd app/build/outputs/apk/debug
-          mv app-debug.apk BootRescue-${{ inputs.version }}.apk
+          mv app-debug.apk AerialHome-${{ inputs.version }}.apk
           ls -l
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: BootRescue-${{ inputs.version }}
-          path: app/build/outputs/apk/debug/BootRescue-*.apk
+          name: AerialHome-${{ inputs.version }}
+          path: app/build/outputs/apk/debug/AerialHome-*.apk
