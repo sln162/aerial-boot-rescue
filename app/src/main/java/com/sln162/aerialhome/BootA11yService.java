@@ -692,6 +692,15 @@ public class BootA11yService extends AccessibilityService {
                 if (h.once != null && clickUp(h.once)) {
                     log("probe " + who + ": click 仅此一次 at +" + ms + "ms (round " + n + ")");
                     pullNow();
+                    // 开机后系统忙，ACTION_CLICK 可能被吞掉：框没走就再点，别只点一次就等它自己走
+                    if (handler != null) {
+                        handler.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                verifyDismiss(who, at, 1);
+                            }
+                        }, 600L);
+                    }
                     scheduleSettle(who, at);
                     return;
                 }
@@ -897,6 +906,49 @@ public class BootA11yService extends AccessibilityService {
     private void scheduleSettle(String who, long at) {
         if (handler != null) {
             handler.postDelayed(new Settle(who, at, 1), 250L);
+        }
+    }
+
+    /**
+     * 点完「仅此一次」再回头看一眼：开机那阵子系统很忙，ACTION_CLICK 有时会被吞掉，
+     * 框一直留在屏幕上。没走就再点一次，最多两次——不是无脑连点：框已经走了就立刻停手。
+     */
+    private void verifyDismiss(String who, long at, int k) {
+        if (k > 2 || handler == null) {
+            return;
+        }
+        String front = frontPackage();
+        if (front != null && !XGIMI_FW.equals(front)) {
+            log("dismiss ok at +" + (SystemClock.elapsedRealtime() - at) + "ms (front=" + front + ")");
+            return;
+        }
+        AccessibilityNodeInfo root = chooserRootQuiet();
+        if (root == null) {
+            return;
+        }
+        try {
+            Holder h = new Holder();
+            scanChooser(root, h);
+            if (h.once != null && clickUp(h.once)) {
+                log("click 仅此一次 again #" + k + " at +" + (SystemClock.elapsedRealtime() - at)
+                        + "ms (chooser still up)");
+                final String w = who;
+                final long a = at;
+                final int nk = k + 1;
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        verifyDismiss(w, a, nk);
+                    }
+                }, 400L);
+            }
+        } catch (Throwable t) {
+            log("verifyDismiss failed: " + t);
+        } finally {
+            try {
+                root.recycle();
+            } catch (Throwable ignored) {
+            }
         }
     }
 
