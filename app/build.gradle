@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.sln162.bootrescue'
+    namespace 'com.sln162.aerialhome'
     compileSdk 28
 
     defaultConfig {
-        applicationId "com.sln162.bootrescue"
+        applicationId "com.sln162.aerialhome"
         minSdk 23
         targetSdk 28
         versionCode 63

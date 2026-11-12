@@ -1,4 +1,4 @@
-package com.sln162.bootrescue;
+package com.sln162.aerialhome;
 
 import android.accessibilityservice.AccessibilityService;
 import android.content.BroadcastReceiver;

@@ -1,4 +1,4 @@
-package com.sln162.bootrescue;
+package com.sln162.aerialhome;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -466,7 +466,7 @@ public class MainActivity extends Activity {
             sb.append(line
                     .replace("com.xgimi.xgimiframeworkui/com.xgimi.xgimiframeworkui.resolver.ResolverActivity", "极米弹框")
                     .replace("com.xgimi.xgimiframeworkui/.resolver.ResolverActivity", "极米弹框")
-                    .replace("com.xgimi.duertts/com.xgimi.duertts.MonitorService:com.sln162.bootrescue/com.sln162.bootrescue.BootA11yService:app.orchard.tv/app.orchard.tv.guard.HomeGuardService", "三项无障碍列表"));
+                    .replace("com.xgimi.duertts/com.xgimi.duertts.MonitorService:com.sln162.aerialhome/com.sln162.aerialhome.BootA11yService:app.orchard.tv/app.orchard.tv.guard.HomeGuardService", "三项无障碍列表"));
         }
         return sb.length() == 0 ? "还没有日志" : sb.toString();
     }

@@ -68,12 +68,13 @@
 ## 装法
 
 1. 从 [Releases](https://github.com/sln162/aerial-home/releases) 下 APK，覆盖安装失败就先卸载旧的（调试签名）
+   - 1.9.9 起包名是 `com.sln162.aerialhome`（仓库改名叫 aerial-home 时一起换的）。装过旧包 `com.sln162.bootrescue` 的，先卸载旧包再装，并重做下面三条命令——换包名等于换应用，无障碍授权不继承
 2. adb 三条：
 
 ```
-pm grant com.sln162.bootrescue android.permission.WRITE_SECURE_SETTINGS
+pm grant com.sln162.aerialhome android.permission.WRITE_SECURE_SETTINGS
 settings put secure enabled_accessibility_services \
-  'com.xgimi.duertts/.MonitorService:app.orchard.tv/.guard.HomeGuardService:com.sln162.bootrescue/com.sln162.bootrescue.BootA11yService'
+  'com.xgimi.duertts/.MonitorService:app.orchard.tv/.guard.HomeGuardService:com.sln162.aerialhome/com.sln162.aerialhome.BootA11yService'
 settings put secure accessibility_enabled 1
 ```
 
@@ -110,7 +111,7 @@ settings put secure accessibility_enabled 1
 ## 日志
 
 ```
-adb shell run-as com.sln162.bootrescue cat /data/user_de/0/com.sln162.bootrescue/files/rescue.log
+adb shell run-as com.sln162.aerialhome cat /data/user_de/0/com.sln162.aerialhome/files/rescue.log
 ```
 
 ## 构建
