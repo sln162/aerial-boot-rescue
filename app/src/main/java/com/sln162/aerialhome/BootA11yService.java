@@ -672,6 +672,16 @@ public class BootA11yService extends AccessibilityService {
                             + " xgimi=" + h.xgimiVia + " once=" + h.onceVia + " at +" + ms + "ms");
                     boolean rowClick = clickUp(h.aerialRow);
                     log("probe " + who + ": click row Aerial=" + rowClick + " at +" + ms + "ms");
+                    // 框刚起来那阵子窗口还不收输入，这一下会直接返回 false，
+                    // 按钮就永远等不到变亮。失败就隔 200ms 再点一次候选行，最多两次。
+                    if (!rowClick && handler != null) {
+                        handler.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                retryRow(who, at, 1);
+                            }
+                        }, 200L);
+                    }
                     // 认不出"仅此一次"（既没有 ID、文字也不认识）：不等按钮变亮，直接点"取消"，
                     // 框照样关掉，Aerial 本来就在下面，再自己补拉一次——绝不赌哪个按钮是"仅此一次"
                     if (h.once == null && h.cancel != null && clickUp(h.cancel)) {
@@ -901,6 +911,56 @@ public class BootA11yService extends AccessibilityService {
             return needle.equals(text) || needle.equals(desc);
         }
         return (text != null && text.contains(needle)) || (desc != null && desc.contains(needle));
+    }
+
+    /**
+     * 点候选行没成功（窗口还没收输入）：Aerial 已经在前台就收工，否则再点一次行。
+     */
+    private void retryRow(String who, long at, int k) {
+        if (k > 2 || handler == null) {
+            return;
+        }
+        if (AERIAL_PKG.equals(frontPackage())) {
+            log("row retry #" + k + ": aerial already in front, stop");
+            return;
+        }
+        AccessibilityNodeInfo root = chooserRootQuiet();
+        if (root == null) {
+            return;
+        }
+        try {
+            Holder h = new Holder();
+            scanChooser(root, h);
+            if (h.once != null && clickUp(h.once)) {
+                log("click 仅此一次 at +" + (SystemClock.elapsedRealtime() - at) + "ms (after row retry #" + k + ")");
+                pullNow();
+                scheduleSettle(who, at);
+                return;
+            }
+            boolean ok = clickUp(h.aerialRow);
+            log("click row Aerial again #" + k + "=" + ok + " at +"
+                    + (SystemClock.elapsedRealtime() - at) + "ms");
+            if (ok) {
+                handler.postDelayed(new Probe(who, at, 1), CHOOSER_POLL_MS);
+                return;
+            }
+        } catch (Throwable t) {
+            log("retryRow failed: " + t);
+        } finally {
+            try {
+                root.recycle();
+            } catch (Throwable ignored) {
+            }
+        }
+        final String w = who;
+        final long a = at;
+        final int nk = k + 1;
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                retryRow(w, a, nk);
+            }
+        }, 200L);
     }
 
     private void scheduleSettle(String who, long at) {
