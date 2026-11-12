@@ -10,8 +10,8 @@ android {
         applicationId "com.sln162.aerialhome"
         minSdk 23
         targetSdk 28
-        versionCode 68
-        versionName "1.9.14"
+        versionCode 69
+        versionName "1.9.15"
     }
 
     buildTypes {

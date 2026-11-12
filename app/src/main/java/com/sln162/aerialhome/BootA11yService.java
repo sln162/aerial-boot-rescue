@@ -34,6 +34,10 @@ public class BootA11yService extends AccessibilityService {
     private static final String AERIAL_CLS = "app.orchard.tv.MainActivity";
     private static final long WINDOW_MS = 180000L;
     private static final long CHECK_MS = 2000L;
+    /** 两次"救"之间至少隔这么久：太密会自己跟自己抢，太慢就白等 */
+    private static final long PULL_COOLDOWN_MS = 5000L;
+    /** 一次运行里最多救这么多次，防止目标桌面根本起不来时无限重试 */
+    private static final int PULL_CAP = 3;
     // 开机动画服务。stopped 说明系统已经把开机画面收掉，该显示界面了，跟过了多少秒无关
     private static final String BOOTANIM_PROP = "init.svc.bootanim";
     private static final long ENSURE_DEBOUNCE_MS = 30000L;
@@ -218,6 +222,28 @@ public class BootA11yService extends AccessibilityService {
     private boolean everSawAerial = false;
     // 开机动画结束之后，连续几次看到"该有画面却是空的"
     private int stall = 0;
+    // 上一次"救"的时刻（只放在内存里：重启后进程重来，天然归零，不需要任何跨开机的记号）
+    private long lastPullAt = 0L;
+    // 这次运行里已经救了几次
+    private int rescuePulls = 0;
+
+    /**
+     * 唯一的一道闸：距离上一次"救"够久、且没超过次数上限，才允许再拉一次。
+     * 开机、重启、关机唤醒、服务被重新绑定，全都走这一条判据——
+     * 不再用"这次开机是否拉过"这种跨开机的记号，那种记号本身就是 bug 来源。
+     */
+    private boolean allowPull() {
+        long now = SystemClock.elapsedRealtime();
+        if (lastPullAt != 0L && now - lastPullAt >= 0 && now - lastPullAt < PULL_COOLDOWN_MS) {
+            return false;
+        }
+        if (rescuePulls >= PULL_CAP) {
+            return false;
+        }
+        lastPullAt = now;
+        rescuePulls++;
+        return true;
+    }
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -227,14 +253,17 @@ public class BootA11yService extends AccessibilityService {
                 log("window closed");
                 return;
             }
-            // 只有开机 10 分钟内才救。日常重新启用服务时 uptime 早就超了，一律不动
-            if (now > 600000L) {
+            // 只在"刚开机"和"刚唤醒"这两段时间里救。日常重新启用服务时 uptime 早超了，一律不动
+            boolean bootWindow = now <= 600000L;
+            boolean wakeWindow = wakeWindowUntil != 0L && now <= wakeWindowUntil;
+            if (!bootWindow && !wakeWindow) {
                 log("uptime " + now + " too long, stand down");
                 return;
             }
             String front = frontPackage();
             if (front != null && AERIAL_PKG.equals(front)) {
                 everSawAerial = true;
+                rescuePulls = 0;
                 log("aerial in front, done");
                 return;
             }
@@ -260,65 +289,27 @@ public class BootA11yService extends AccessibilityService {
             stall++;
             log("boot finished but no usable window (" + stall + "/2, front=null)");
             if (stall >= 2) {
-                // 同一次开机只救一次：服务被重新绑定（装包、改无障碍列表）会重开轮询，
-                // 不记住就会被拉两次、还记两次"救黑屏"。
-                // 判"是不是这次开机"只认 boot_id（每次开机换一个，重启、断电都换），
-                // 不能只靠时间：时间在两次开机之间是连着的，隔一分钟重启就会被当成
-                // "刚拉过"而跳过——那正是黑屏的来源。
-                String bid = bootId();
-                String lastBid = prefs().getString("boot_pull_bid", "");
-                long last = prefs().getLong("boot_pull_wall", 0);
-                long wall = System.currentTimeMillis();
-                boolean pulled = false;
-                if (bid != null && bid.equals(lastBid)) {
-                    pulled = last > 0 && last <= wall && wall - last < 300000L;
-                    if (pulled) {
-                        log("already pulled this boot (" + (wall - last) + "ms ago), skip");
-                    }
-                }
-                if (!pulled && bid == null && last > 0 && last <= wall && wall - last < 300000L) {
-                    // 读不到 boot_id 时退回时间判据：至少不会跨开机误跳过得太离谱
-                    pulled = true;
-                    log("already pulled this boot (" + (wall - last) + "ms ago, no boot id), skip");
-                }
-                if (pulled) {
+                if (!allowPull()) {
+                    log("no usable window, but pull is cooling down or capped (" + rescuePulls + "), wait");
+                    handler.postDelayed(this, CHECK_MS);
                     return;
                 }
-                prefs().edit()
-                        .putLong("boot_pull_wall", wall)
-                        .putString("boot_pull_bid", bid == null ? "" : bid)
-                        .apply();
-                log("boot finished and still nothing, aerial never in front, pulling aerial"
-                        + (bid == null ? "" : " (boot " + bid.substring(0, Math.min(8, bid.length())) + ")"));
-                pull();
+                if (bootWindow) {
+                    log("boot finished and still nothing, aerial never in front, pulling aerial");
+                    pull();
+                } else {
+                    // 唤醒后黑屏：跟"落在极米桌面"一样走 quiet，不记"救黑屏"次数
+                    log("wake and still nothing, aerial never in front, pull quiet");
+                    pullQuiet();
+                    if (handler != null) {
+                        handler.postDelayed(wakeHide, WAKE_HIDE_MS);
+                    }
+                }
                 return;
             }
             handler.postDelayed(this, CHECK_MS);
         }
     };
-
-    private android.content.SharedPreferences prefs() {
-        return createDeviceProtectedStorageContext().getSharedPreferences("guard", android.content.Context.MODE_PRIVATE);
-    }
-
-    /**
-     * 本次开机的唯一标识，每次开机换一个。拿它判"是不是同一次开机"，比时间可靠：
-     * 时间在两次开机之间是连着的，隔一分钟重启会被误判成"刚拉过"。
-     */
-    private String bootId() {
-        try {
-            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(
-                    "/proc/sys/kernel/random/boot_id"));
-            try {
-                String line = r.readLine();
-                return line == null ? null : line.trim();
-            } finally {
-                r.close();
-            }
-        } catch (Throwable t) {
-            return null;
-        }
-    }
 
     /** 系统开机流程走完了没有：开机动画收掉，或者系统自己置了 boot_completed。跟时长无关。 */
     private boolean bootFinished() {
@@ -383,6 +374,8 @@ public class BootA11yService extends AccessibilityService {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             startActivity(i);
             log("pull: start aerial right after click 仅此一次");
+            // 记一笔，免得紧接着的"救黑屏"判定在几秒内又拉一次
+            lastPullAt = SystemClock.elapsedRealtime();
         } catch (Throwable t) {
             log("pullNow failed: " + t);
         }
@@ -543,14 +536,11 @@ public class BootA11yService extends AccessibilityService {
     private static final long WAKE_GAP_MS = 60000L;
     /** 醒来后给 10 秒时间等前台稳定，这期间最多补拉一次 */
     private static final long WAKE_CHECK_MS = 10000L;
-    /** 两次补拉之间至少隔 3 秒，防止 startActivity 被挡时每秒重试 */
-    private static final long WAKE_PULL_COOLDOWN_MS = 3000L;
     /** pullQuiet 挂的 1px 窗口没有 Settle 帮忙收尾，自己 6 秒后清掉 */
     private static final long WAKE_HIDE_MS = 6000L;
 
     private long lastWatchAt = 0L;
     private long wakeWindowUntil = 0L;
-    private long lastWakePull = 0L;
 
     private final Runnable wakeHide = new Runnable() {
         @Override
@@ -568,7 +558,10 @@ public class BootA11yService extends AccessibilityService {
                 long gap = lastWatchAt == 0L ? 0L : now - lastWatchAt;
                 lastWatchAt = now;
                 if (gap > WAKE_GAP_MS) {
+                    // 睡了一觉，前面"见过 Aerial"不再作数；黑屏和落在极米桌面都交给同一套判据
                     wakeWindowUntil = now + WAKE_CHECK_MS;
+                    everSawAerial = false;
+                    stall = 0;
                     log("wake: slept " + gap + "ms, watching front for 10s");
                 }
                 if (XGIMI_FW.equals(front) && now - chooserAt > WATCH_CHOOSER_GAP_MS) {
@@ -596,9 +589,7 @@ public class BootA11yService extends AccessibilityService {
                 if (wakeWindowUntil != 0L) {
                     if (now > wakeWindowUntil) {
                         wakeWindowUntil = 0L;
-                    } else if (XGIMI_HOME.equals(front)
-                            && now - lastWakePull > WAKE_PULL_COOLDOWN_MS) {
-                        lastWakePull = now;
+                    } else if (XGIMI_HOME.equals(front) && allowPull()) {
                         wakeWindowUntil = 0L;
                         log("wake: front is 极米桌面, pull quiet");
                         pullQuiet();
