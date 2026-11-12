@@ -630,11 +630,21 @@ public class BootA11yService extends AccessibilityService {
         private final String who;
         private final long at;
         private final int n;
+        /**
+         * 候选行到底点进去没有。只有点进去了，"亮着的按钮"才可能是 Aerial；
+         * 点行失败时按钮亮着往往是"极米桌面"被选中的结果，这时点它就是启动错桌面。
+         */
+        private final boolean rowOk;
 
         Probe(String who, long at, int n) {
+            this(who, at, n, false);
+        }
+
+        Probe(String who, long at, int n, boolean rowOk) {
             this.who = who;
             this.at = at;
             this.n = n;
+            this.rowOk = rowOk;
         }
 
         @Override
@@ -649,7 +659,7 @@ public class BootA11yService extends AccessibilityService {
             if (root == null) {
                 // 弹框窗口还没出现（或已经被盖住看不见了），继续等
                 if (n < 24 && handler != null) {
-                    handler.postDelayed(new Probe(who, at, n + 1), CHOOSER_POLL_MS);
+                    handler.postDelayed(new Probe(who, at, n + 1, rowOk), CHOOSER_POLL_MS);
                 } else if (n >= 24) {
                     log("probe " + who + ": chooser never showed up, gave up at +" + ms + "ms");
                 }
@@ -692,14 +702,16 @@ public class BootA11yService extends AccessibilityService {
                         return;
                     }
                     if (handler != null) {
-                        handler.postDelayed(new Probe(who, at, 1), CHOOSER_POLL_MS);
+                        handler.postDelayed(new Probe(who, at, 1, rowClick), CHOOSER_POLL_MS);
                     }
                     return;
                 }
 
                 // 按钮一亮就点：不先查 isEnabled，直接点，返回 false 就下一轮再来，
                 // 这样"变亮的那个瞬间"就被抓住，不用等下一整轮
-                if (h.once != null && clickUp(h.once)) {
+                // 但前提是候选行确实点进去了；点行失败时按钮亮着可能是"极米桌面"被选中，
+                // 这时候点「仅此一次」等于启动极米桌面——宁可等超时走取消兜底
+                if (rowOk && h.once != null && clickUp(h.once)) {
                     log("probe " + who + ": click 仅此一次 at +" + ms + "ms (round " + n + ")");
                     pullNow();
                     // 开机后系统忙，ACTION_CLICK 可能被吞掉：框没走就再点，别只点一次就等它自己走
@@ -715,7 +727,7 @@ public class BootA11yService extends AccessibilityService {
                     return;
                 }
                 if (n < ONCE_MAX_ROUND && handler != null) {
-                    handler.postDelayed(new Probe(who, at, n + 1), CHOOSER_POLL_MS);
+                    handler.postDelayed(new Probe(who, at, n + 1, rowOk), CHOOSER_POLL_MS);
                     return;
                 }
                 // 一直等不到按钮变亮：宁可点"取消"把这个窗口关掉，也不盲点"始终"记错桌面
@@ -941,7 +953,7 @@ public class BootA11yService extends AccessibilityService {
             log("click row Aerial again #" + k + "=" + ok + " at +"
                     + (SystemClock.elapsedRealtime() - at) + "ms");
             if (ok) {
-                handler.postDelayed(new Probe(who, at, 1), CHOOSER_POLL_MS);
+                handler.postDelayed(new Probe(who, at, 1, true), CHOOSER_POLL_MS);
                 return;
             }
         } catch (Throwable t) {
