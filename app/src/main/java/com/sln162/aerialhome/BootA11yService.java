@@ -224,11 +224,17 @@ public class BootA11yService extends AccessibilityService {
     private int stall = 0;
     // 上一次"救"的时刻（只放在内存里：重启后进程重来，天然归零，不需要任何跨开机的记号）
     private long lastPullAt = 0L;
-    // 这次运行里已经救了几次
-    private int rescuePulls = 0;
+    // 本回合（一次开机尾巴 / 一次唤醒）已经救了几次
+    private int episodePulls = 0;
+
+    /** 一个新回合开始：开机尾巴、或者一次唤醒。额度按回合算，不按进程算——
+     *  进程可以连着活好几天，拿进程当回合的话额度用完就永远不再救。 */
+    private void startEpisode() {
+        episodePulls = 0;
+    }
 
     /**
-     * 唯一的一道闸：距离上一次"救"够久、且没超过次数上限，才允许再拉一次。
+     * 唯一的一道闸：距离上一次"救"够久、且本回合没超过次数上限，才允许再拉一次。
      * 开机、重启、关机唤醒、服务被重新绑定，全都走这一条判据——
      * 不再用"这次开机是否拉过"这种跨开机的记号，那种记号本身就是 bug 来源。
      */
@@ -237,11 +243,11 @@ public class BootA11yService extends AccessibilityService {
         if (lastPullAt != 0L && now - lastPullAt >= 0 && now - lastPullAt < PULL_COOLDOWN_MS) {
             return false;
         }
-        if (rescuePulls >= PULL_CAP) {
+        if (episodePulls >= PULL_CAP) {
             return false;
         }
         lastPullAt = now;
-        rescuePulls++;
+        episodePulls++;
         return true;
     }
 
@@ -253,17 +259,16 @@ public class BootA11yService extends AccessibilityService {
                 log("window closed");
                 return;
             }
-            // 只在"刚开机"和"刚唤醒"这两段时间里救。日常重新启用服务时 uptime 早超了，一律不动
-            boolean bootWindow = now <= 600000L;
-            boolean wakeWindow = wakeWindowUntil != 0L && now <= wakeWindowUntil;
-            if (!bootWindow && !wakeWindow) {
+            // 只有开机 10 分钟内才救。日常重新启用服务时 uptime 早就超了，一律不动。
+            // 唤醒后的黑屏不在这里管：这条循环只活 3 分钟，几小时后那次唤醒它早停了（watch 才是常驻的）。
+            if (now > 600000L) {
                 log("uptime " + now + " too long, stand down");
                 return;
             }
             String front = frontPackage();
             if (front != null && AERIAL_PKG.equals(front)) {
                 everSawAerial = true;
-                rescuePulls = 0;
+                startEpisode();
                 log("aerial in front, done");
                 return;
             }
@@ -290,21 +295,12 @@ public class BootA11yService extends AccessibilityService {
             log("boot finished but no usable window (" + stall + "/2, front=null)");
             if (stall >= 2) {
                 if (!allowPull()) {
-                    log("no usable window, but pull is cooling down or capped (" + rescuePulls + "), wait");
+                    log("no usable window, but pull is cooling down or capped (" + episodePulls + "), wait");
                     handler.postDelayed(this, CHECK_MS);
                     return;
                 }
-                if (bootWindow) {
-                    log("boot finished and still nothing, aerial never in front, pulling aerial");
-                    pull();
-                } else {
-                    // 唤醒后黑屏：跟"落在极米桌面"一样走 quiet，不记"救黑屏"次数
-                    log("wake and still nothing, aerial never in front, pull quiet");
-                    pullQuiet();
-                    if (handler != null) {
-                        handler.postDelayed(wakeHide, WAKE_HIDE_MS);
-                    }
-                }
+                log("boot finished and still nothing, aerial never in front, pulling aerial");
+                pull();
                 return;
             }
             handler.postDelayed(this, CHECK_MS);
@@ -358,8 +354,11 @@ public class BootA11yService extends AccessibilityService {
             i.setComponent(new ComponentName(AERIAL_PKG, AERIAL_CLS));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             startActivity(i);
-            // 开机不再弹自己的界面，只在计数里留下这一次（打开应用就能看到"上次救黑屏"）
-            Stats.rescue(this);
+            // 开机不再弹自己的界面，只在计数里留下这一次（打开应用就能看到"上次救黑屏"）。
+            // 按回合记：同一回合里的重试不该被算成"救了三次"。
+            if (episodePulls <= 1) {
+                Stats.rescue(this);
+            }
         } catch (Throwable t) {
             log("startActivity failed: " + t);
         }
@@ -534,13 +533,15 @@ public class BootA11yService extends AccessibilityService {
     /** 设备睡过去时 Handler 会被冻住，醒来后第一轮的间隔会突然变得很大。
      *  实测屏保（Dreaming）留下的空档只有 15~40 秒，所以跨过 60 秒才算真休眠过。 */
     private static final long WAKE_GAP_MS = 60000L;
-    /** 醒来后给 10 秒时间等前台稳定，这期间最多补拉一次 */
-    private static final long WAKE_CHECK_MS = 10000L;
+    /** 醒来后给 20 秒时间等前台稳定：极米唤醒爬升慢的时候，10 秒窗口会在画面还没出来时就关掉 */
+    private static final long WAKE_CHECK_MS = 20000L;
     /** pullQuiet 挂的 1px 窗口没有 Settle 帮忙收尾，自己 6 秒后清掉 */
     private static final long WAKE_HIDE_MS = 6000L;
 
     private long lastWatchAt = 0L;
     private long wakeWindowUntil = 0L;
+    // 唤醒窗口里连续几轮看不到任何前台：一次抖动不算黑屏，要连续两轮
+    private int wakeNull = 0;
 
     private final Runnable wakeHide = new Runnable() {
         @Override
@@ -562,7 +563,9 @@ public class BootA11yService extends AccessibilityService {
                     wakeWindowUntil = now + WAKE_CHECK_MS;
                     everSawAerial = false;
                     stall = 0;
-                    log("wake: slept " + gap + "ms, watching front for 10s");
+                    wakeNull = 0;
+                    startEpisode();
+                    log("wake: slept " + gap + "ms, watching front for " + (WAKE_CHECK_MS / 1000) + "s");
                 }
                 if (XGIMI_FW.equals(front) && now - chooserAt > WATCH_CHOOSER_GAP_MS) {
                     // 前台突然变成极米框架窗口：事件漏了，这里补上
@@ -582,16 +585,27 @@ public class BootA11yService extends AccessibilityService {
                         }
                     }
                 }
-                // 醒来后落在极米桌面上（睡前栈顶就是它，唤醒只会恢复旧栈）：把它拉回来。
-                // 只认极米桌面，别的 app 一律不抢，免得把人家正在看的东西顶掉。
+                // 醒来后要把 Aerial 请回来：落在极米桌面（睡前栈顶就是它），或者干脆没画面（黑屏），
+                // 两种情况都是同一个动作，走同一道闸。别的 app 一律不抢，免得把人家正在看的东西顶掉。
                 // 这里不看屏幕亮没亮：Handler 能跑到这一轮就说明设备已经醒了（真睡着时它是冻住的）。
                 // 唤醒爬升期（屏还没亮）就把 Aerial 顶上去，亮屏第一帧才是 Aerial；等屏亮再拉会先露原桌面。
+                // 拉完不清窗口：万一这次 startActivity 被系统挡掉，5 秒冷却过后还有再试一次的机会。
                 if (wakeWindowUntil != 0L) {
+                    if (front == null) {
+                        wakeNull++;
+                    } else {
+                        wakeNull = 0;
+                    }
                     if (now > wakeWindowUntil) {
                         wakeWindowUntil = 0L;
-                    } else if (XGIMI_HOME.equals(front) && allowPull()) {
+                        log("wake: window closed, front=" + front);
+                    } else if (AERIAL_PKG.equals(front)) {
                         wakeWindowUntil = 0L;
-                        log("wake: front is 极米桌面, pull quiet");
+                        log("wake: aerial in front");
+                    } else if ((XGIMI_HOME.equals(front) || wakeNull >= 2)
+                            && now - chooserAt > WATCH_CHOOSER_GAP_MS
+                            && allowPull()) {
+                        log("wake: front=" + front + ", pull quiet");
                         pullQuiet();
                         if (handler != null) {
                             handler.postDelayed(wakeHide, WAKE_HIDE_MS);
