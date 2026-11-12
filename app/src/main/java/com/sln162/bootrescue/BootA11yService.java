@@ -651,6 +651,15 @@ public class BootA11yService extends AccessibilityService {
                             + " xgimi=" + h.xgimiVia + " once=" + h.onceVia + " at +" + ms + "ms");
                     boolean rowClick = clickUp(h.aerialRow);
                     log("probe " + who + ": click row Aerial=" + rowClick + " at +" + ms + "ms");
+                    // 认不出"仅此一次"（既没有 ID、文字也不认识）：不等按钮变亮，直接点"取消"，
+                    // 框照样关掉，Aerial 本来就在下面，再自己补拉一次——绝不赌哪个按钮是"仅此一次"
+                    if (h.once == null && h.cancel != null && clickUp(h.cancel)) {
+                        log("probe " + who + ": once unknown, click cancel at +" + ms + "ms");
+                        pullNow();
+                        Stats.home(BootA11yService.this, SystemClock.elapsedRealtime() - at, "取消兜底");
+                        scheduleSettle(who, at);
+                        return;
+                    }
                     if (handler != null) {
                         handler.postDelayed(new Probe(who, at, 1), CHOOSER_POLL_MS);
                     }
@@ -673,6 +682,9 @@ public class BootA11yService extends AccessibilityService {
                 AccessibilityNodeInfo cancel = findByText(root, "取消", true);
                 if (cancel == null) {
                     cancel = findByText(root, "Cancel", true);
+                }
+                if (cancel == null) {
+                    cancel = findByText(root, "Отмена", true);
                 }
                 if (cancel == null) {
                     cancel = h.cancel;
@@ -753,18 +765,26 @@ public class BootA11yService extends AccessibilityService {
         return vid != null && vid.contains("button_once");
     }
 
-    /** 节点在屏幕上的顶边，用来按上下顺序认按钮 */
-    private static int topOf(AccessibilityNodeInfo node) {
-        android.graphics.Rect r = new android.graphics.Rect();
-        node.getBoundsInScreen(r);
-        return r.top;
+    /** "仅此一次"在各语言下的写法；AOSP 的框先靠 button_once 的 ID，这里兜定制界面 */
+    private static final String[] ONCE_TEXTS = {
+            "仅此一次", "仅一次", "Just once", "Once", "Только сейчас", "Один раз",
+            "Лише один раз", "Тек бір рет",
+    };
+
+    private static boolean isOnceText(String text, String desc) {
+        for (String t : ONCE_TEXTS) {
+            if (matches(text, desc, t, true)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
      * 一次广度遍历，把 Aerial 行 / 极米桌面行 / 仅此一次 全找出来，找齐就提前收手。
      * 认出哪个节点不写死中文：行用系统给的应用标签（跟着语言走），按钮先认控件 ID，
-     * 再按按钮的上下顺序认（框里三个按钮固定是"仅此一次 / 始终 / 取消"，极米这台机上
-     * 所有节点都没有 resource-id，实测 id 全空，只能靠顺序），最后才落回写死的文字。
+     * 再认几种语言的"仅此一次"文字；都认不出来时绝不按顺序猜（有的固件「始终」排第一，
+     * 猜错就会写错首选桌面），只用"选候选前唯一亮着的那个按钮 = 取消"这条安全判据。
      */
     private void scanChooser(AccessibilityNodeInfo root, Holder h) {
         java.util.ArrayDeque<AccessibilityNodeInfo> queue = new java.util.ArrayDeque<>();
@@ -791,8 +811,7 @@ public class BootA11yService extends AccessibilityService {
             if (onceText == null && isOnceId(vid)) {
                 onceText = node;
                 h.onceVia = "id:" + vid;
-            } else if (onceText == null
-                    && (matches(text, desc, "仅此一次", true) || matches(text, desc, "仅一次", true))) {
+            } else if (onceText == null && isOnceText(text, desc)) {
                 onceText = node;
                 h.onceVia = "text";
             }
@@ -824,31 +843,23 @@ public class BootA11yService extends AccessibilityService {
                 }
             }
         }
-        // 选候选之前"仅此一次"和"始终"都是灰的、只有"取消"是亮的，所以：
-        // 未亮的按钮里最上面那个是"仅此一次"，亮着的那个（最下面）是"取消"。
-        // 这样不认字也能点，换语言不会失效。
+        // 只认"一定不会点错"的那个：选候选之前，三个按钮里只有"取消"是亮的，另外两个（仅此一次/始终）都是灰的。
+        // 所以亮着的那个就是"取消"，可以放心点——即使换语言认不出字，最坏也只是取消掉这个框，
+        // 绝不会点到"始终"去写错首选记录。反过来不能按上下顺序去猜"哪个是仅此一次"：
+        // 有的固件可能把"始终"排在第一个，猜错就是记错桌面。顺序不作为判据。
         if (buttons.size() == 3) {
-            AccessibilityNodeInfo disabledTop = null;
-            AccessibilityNodeInfo enabledBottom = null;
+            AccessibilityNodeInfo onlyEnabled = null;
+            int enabledCount = 0;
             for (AccessibilityNodeInfo b : buttons) {
-                if (!b.isEnabled()) {
-                    if (disabledTop == null || topOf(b) < topOf(disabledTop)) {
-                        disabledTop = b;
-                    }
-                } else if (enabledBottom == null || topOf(b) > topOf(enabledBottom)) {
-                    enabledBottom = b;
+                if (b.isEnabled()) {
+                    enabledCount++;
+                    onlyEnabled = b;
                 }
             }
-            if (onceText == null && disabledTop != null) {
-                onceText = disabledTop;
-                h.onceVia = "order:1of3";
-            } else if (onceText != null && disabledTop != null) {
-                // 文字认到了，顺带核对一下"按顺序认"会不会指到同一个按钮，不用换语言也能验
-                h.onceVia = h.onceVia + (topOf(disabledTop) == topOf(onceText)
-                        ? " (order agrees)" : " (order differs:" + topOf(disabledTop)
-                        + "/" + topOf(onceText) + ")");
+            if (enabledCount == 1) {
+                h.cancel = onlyEnabled;
+                h.onceVia = (onceText == null ? "none" : h.onceVia) + " (cancel:onlyEnabled)";
             }
-            h.cancel = enabledBottom;
         }
         h.aerialRow = clickableAncestor(aerialText);
         h.xgimiRow = clickableAncestor(xgimiText);
