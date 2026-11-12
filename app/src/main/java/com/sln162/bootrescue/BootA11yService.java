@@ -9,7 +9,6 @@ import android.database.ContentObserver;
 import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
@@ -423,17 +422,6 @@ public class BootA11yService extends AccessibilityService {
         }
     };
 
-    /** 屏幕是不是亮着。刚唤醒那一刻可能还没点亮，交给后面几轮重试 */
-    private boolean isInteractive() {
-        try {
-            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            return pm != null && pm.isInteractive();
-        } catch (Throwable t) {
-            log("isInteractive failed: " + t);
-            return false;
-        }
-    }
-
     private final Runnable watch = new Runnable() {
         @Override
         public void run() {
@@ -466,10 +454,12 @@ public class BootA11yService extends AccessibilityService {
                 }
                 // 醒来后落在极米桌面上（睡前栈顶就是它，唤醒只会恢复旧栈）：把它拉回来。
                 // 只认极米桌面，别的 app 一律不抢，免得把人家正在看的东西顶掉。
+                // 这里不看屏幕亮没亮：Handler 能跑到这一轮就说明设备已经醒了（真睡着时它是冻住的）。
+                // 唤醒爬升期（屏还没亮）就把 Aerial 顶上去，亮屏第一帧才是 Aerial；等屏亮再拉会先露原桌面。
                 if (wakeWindowUntil != 0L) {
                     if (now > wakeWindowUntil) {
                         wakeWindowUntil = 0L;
-                    } else if (XGIMI_HOME.equals(front) && isInteractive()
+                    } else if (XGIMI_HOME.equals(front)
                             && now - lastWakePull > WAKE_PULL_COOLDOWN_MS) {
                         lastWakePull = now;
                         wakeWindowUntil = 0L;
