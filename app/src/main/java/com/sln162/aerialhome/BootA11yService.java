@@ -90,6 +90,10 @@ public class BootA11yService extends AccessibilityService {
         } catch (Throwable t) {
             log("pack receiver failed: " + t);
         }
+        // 重新绑定时先把旧的循环摘掉：不摘就会变成两条 tick/watch 并行，
+        // 同一件事数两遍、判两遍（实测出现过 stall 数成 3/2、1.5 秒内拉两次 Aerial）
+        handler.removeCallbacks(tick);
+        handler.removeCallbacks(watch);
         handler.postDelayed(tick, CHECK_MS);
         handler.postDelayed(watch, WATCH_MS);
         // 刚绑上就先看一眼：开机那次的弹框如果这会儿还在，立刻点掉
@@ -233,22 +237,60 @@ public class BootA11yService extends AccessibilityService {
         episodePulls = 0;
     }
 
+    private android.content.SharedPreferences prefs() {
+        return createDeviceProtectedStorageContext().getSharedPreferences("guard", android.content.Context.MODE_PRIVATE);
+    }
+
     /**
      * 唯一的一道闸：距离上一次"救"够久、且本回合没超过次数上限，才允许再拉一次。
-     * 开机、重启、关机唤醒、服务被重新绑定，全都走这一条判据——
-     * 不再用"这次开机是否拉过"这种跨开机的记号，那种记号本身就是 bug 来源。
+     *
+     * 冷却判断跨进程也要有效（实测极米会在开机时改无障碍列表、服务重绑，甚至换掉进程，
+     * 换成内存变量后 1.5 秒内拉过两次 Aerial），所以"上次几点拉的"要落盘。
+     * 落盘的写法刻意不用墙钟、也不存固定机器标识：存的是
+     *   上次那次的开机标识（运行时读 /proc/sys/kernel/random/boot_id）
+     * + 上次那次的开机内时钟（SystemClock.elapsedRealtime）
+     * 只有"两次开机标识相同、且开机内时钟差 < 冷却"才算刚拉过。开机标识每次都变，
+     * 所以跨重启天然放行；读不到标识就一律放行——宁可多拉一次，也不能把该救的那次吞掉。
      */
     private boolean allowPull() {
         long now = SystemClock.elapsedRealtime();
-        if (lastPullAt != 0L && now - lastPullAt >= 0 && now - lastPullAt < PULL_COOLDOWN_MS) {
+        String bid = bootId();
+        String lastBid = prefs().getString("pull_boot", "");
+        long lastAt = prefs().getLong("pull_at", 0L);
+        boolean sameBoot = bid != null && bid.equals(lastBid);
+        if (sameBoot && lastAt > 0 && now >= lastAt && now - lastAt < PULL_COOLDOWN_MS) {
             return false;
         }
         if (episodePulls >= PULL_CAP) {
             return false;
         }
-        lastPullAt = now;
+        markPull(now, bid);
         episodePulls++;
         return true;
+    }
+
+    /** 记下"刚刚拉过"：内存一份（本进程用），落盘一份（跨进程、跨服务重绑用） */
+    private void markPull(long now, String bid) {
+        lastPullAt = now;
+        try {
+            prefs().edit().putString("pull_boot", bid == null ? "" : bid).putLong("pull_at", now).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private String bootId() {
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(
+                    "/proc/sys/kernel/random/boot_id"));
+            try {
+                String line = r.readLine();
+                return line == null ? null : line.trim();
+            } finally {
+                r.close();
+            }
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     private final Runnable tick = new Runnable() {
@@ -373,8 +415,9 @@ public class BootA11yService extends AccessibilityService {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
             startActivity(i);
             log("pull: start aerial right after click 仅此一次");
-            // 记一笔，免得紧接着的"救黑屏"判定在几秒内又拉一次
-            lastPullAt = SystemClock.elapsedRealtime();
+            // 记一笔（含落盘），免得紧接着的"救黑屏"判定在几秒内又拉一次——
+            // 服务在点框之后常常会重绑/换进程，只记内存挡不住第二次
+            markPull(SystemClock.elapsedRealtime(), bootId());
         } catch (Throwable t) {
             log("pullNow failed: " + t);
         }
