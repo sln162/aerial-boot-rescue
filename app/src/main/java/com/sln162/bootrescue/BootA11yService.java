@@ -9,6 +9,7 @@ import android.database.ContentObserver;
 import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
@@ -401,12 +402,50 @@ public class BootA11yService extends AccessibilityService {
     private static final long WATCH_MS = 1000L;
     private static final long WATCH_CHOOSER_GAP_MS = 4000L;
 
+    /** 设备睡过去时 Handler 会被冻住，醒来后第一轮的间隔会突然变得很大。
+     *  实测屏保（Dreaming）留下的空档只有 15~40 秒，所以跨过 60 秒才算真休眠过。 */
+    private static final long WAKE_GAP_MS = 60000L;
+    /** 醒来后给 10 秒时间等前台稳定，这期间最多补拉一次 */
+    private static final long WAKE_CHECK_MS = 10000L;
+    /** 两次补拉之间至少隔 3 秒，防止 startActivity 被挡时每秒重试 */
+    private static final long WAKE_PULL_COOLDOWN_MS = 3000L;
+    /** pullQuiet 挂的 1px 窗口没有 Settle 帮忙收尾，自己 6 秒后清掉 */
+    private static final long WAKE_HIDE_MS = 6000L;
+
+    private long lastWatchAt = 0L;
+    private long wakeWindowUntil = 0L;
+    private long lastWakePull = 0L;
+
+    private final Runnable wakeHide = new Runnable() {
+        @Override
+        public void run() {
+            hideOverlay();
+        }
+    };
+
+    /** 屏幕是不是亮着。刚唤醒那一刻可能还没点亮，交给后面几轮重试 */
+    private boolean isInteractive() {
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            return pm != null && pm.isInteractive();
+        } catch (Throwable t) {
+            log("isInteractive failed: " + t);
+            return false;
+        }
+    }
+
     private final Runnable watch = new Runnable() {
         @Override
         public void run() {
             try {
                 String front = frontPackage();
                 long now = SystemClock.elapsedRealtime();
+                long gap = lastWatchAt == 0L ? 0L : now - lastWatchAt;
+                lastWatchAt = now;
+                if (gap > WAKE_GAP_MS) {
+                    wakeWindowUntil = now + WAKE_CHECK_MS;
+                    log("wake: slept " + gap + "ms, watching front for 10s");
+                }
                 if (XGIMI_FW.equals(front) && now - chooserAt > WATCH_CHOOSER_GAP_MS) {
                     // 前台突然变成极米框架窗口：事件漏了，这里补上
                     chooserAt = now;
@@ -422,6 +461,22 @@ public class BootA11yService extends AccessibilityService {
                         try {
                             r.recycle();
                         } catch (Throwable ignored) {
+                        }
+                    }
+                }
+                // 醒来后落在极米桌面上（睡前栈顶就是它，唤醒只会恢复旧栈）：把它拉回来。
+                // 只认极米桌面，别的 app 一律不抢，免得把人家正在看的东西顶掉。
+                if (wakeWindowUntil != 0L) {
+                    if (now > wakeWindowUntil) {
+                        wakeWindowUntil = 0L;
+                    } else if (XGIMI_HOME.equals(front) && isInteractive()
+                            && now - lastWakePull > WAKE_PULL_COOLDOWN_MS) {
+                        lastWakePull = now;
+                        wakeWindowUntil = 0L;
+                        log("wake: front is 极米桌面, pull quiet");
+                        pullQuiet();
+                        if (handler != null) {
+                            handler.postDelayed(wakeHide, WAKE_HIDE_MS);
                         }
                     }
                 }
