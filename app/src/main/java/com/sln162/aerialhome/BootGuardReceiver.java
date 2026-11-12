@@ -12,7 +12,7 @@ public class BootGuardReceiver extends BroadcastReceiver {
         try {
             context.createDeviceProtectedStorageContext()
                     .getSharedPreferences("guard", Context.MODE_PRIVATE)
-                    .edit().remove("boot_pull_wall").remove("boot_pull_at").apply();
+                    .edit().remove("boot_pull_wall").remove("boot_pull_at").remove("boot_pull_bid").apply();
         } catch (Throwable t) {
             BootA11yService.logLine(context, "clear boot_pull_at failed: " + t);
         }

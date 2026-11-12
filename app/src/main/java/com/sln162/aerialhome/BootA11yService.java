@@ -262,16 +262,34 @@ public class BootA11yService extends AccessibilityService {
             if (stall >= 2) {
                 // 同一次开机只救一次：服务被重新绑定（装包、改无障碍列表）会重开轮询，
                 // 不记住就会被拉两次、还记两次"救黑屏"。
-                // 用墙钟而不是 elapsedRealtime：后者每次开机从 0 数，上一次开机存的值
-                // 拿到这次来比，要么是负数、要么凑巧还是正数，两种都会把该救的那次吞掉。
+                // 判"是不是这次开机"只认 boot_id（每次开机换一个，重启、断电都换），
+                // 不能只靠时间：时间在两次开机之间是连着的，隔一分钟重启就会被当成
+                // "刚拉过"而跳过——那正是黑屏的来源。
+                String bid = bootId();
+                String lastBid = prefs().getString("boot_pull_bid", "");
                 long last = prefs().getLong("boot_pull_wall", 0);
                 long wall = System.currentTimeMillis();
-                if (last > 0 && last <= wall && wall - last < 300000L) {
-                    log("already pulled this boot (" + (wall - last) + "ms ago), skip");
+                boolean pulled = false;
+                if (bid != null && bid.equals(lastBid)) {
+                    pulled = last > 0 && last <= wall && wall - last < 300000L;
+                    if (pulled) {
+                        log("already pulled this boot (" + (wall - last) + "ms ago), skip");
+                    }
+                }
+                if (!pulled && bid == null && last > 0 && last <= wall && wall - last < 300000L) {
+                    // 读不到 boot_id 时退回时间判据：至少不会跨开机误跳过得太离谱
+                    pulled = true;
+                    log("already pulled this boot (" + (wall - last) + "ms ago, no boot id), skip");
+                }
+                if (pulled) {
                     return;
                 }
-                prefs().edit().putLong("boot_pull_wall", wall).apply();
-                log("boot finished and still nothing, aerial never in front, pulling aerial");
+                prefs().edit()
+                        .putLong("boot_pull_wall", wall)
+                        .putString("boot_pull_bid", bid == null ? "" : bid)
+                        .apply();
+                log("boot finished and still nothing, aerial never in front, pulling aerial"
+                        + (bid == null ? "" : " (boot " + bid.substring(0, Math.min(8, bid.length())) + ")"));
                 pull();
                 return;
             }
@@ -281,6 +299,25 @@ public class BootA11yService extends AccessibilityService {
 
     private android.content.SharedPreferences prefs() {
         return createDeviceProtectedStorageContext().getSharedPreferences("guard", android.content.Context.MODE_PRIVATE);
+    }
+
+    /**
+     * 本次开机的唯一标识，每次开机换一个。拿它判"是不是同一次开机"，比时间可靠：
+     * 时间在两次开机之间是连着的，隔一分钟重启会被误判成"刚拉过"。
+     */
+    private String bootId() {
+        try {
+            java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(
+                    "/proc/sys/kernel/random/boot_id"));
+            try {
+                String line = r.readLine();
+                return line == null ? null : line.trim();
+            } finally {
+                r.close();
+            }
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 系统开机流程走完了没有：开机动画收掉，或者系统自己置了 boot_completed。跟时长无关。 */
