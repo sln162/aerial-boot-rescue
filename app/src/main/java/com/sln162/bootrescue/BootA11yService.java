@@ -641,6 +641,9 @@ public class BootA11yService extends AccessibilityService {
                 if (n == 0) {
                     // 第一轮：只点一次候选行。反复点会把"按钮变亮"的过程一直重置。
                     log("probe " + who + ": chooser window at +" + ms + "ms");
+                    if (DUMP_CHOOSER_TREE) {
+                        dumpChooserTree(root, who);
+                    }
                     log("probe " + who + ": Aerial[" + rowState(h.aerialRow) + "] 极米桌面["
                             + rowState(h.xgimiRow) + "] 仅此一次enabled="
                             + (h.once != null && h.once.isEnabled()) + " at +" + ms + "ms");
@@ -671,6 +674,9 @@ public class BootA11yService extends AccessibilityService {
                 if (cancel == null) {
                     cancel = findByText(root, "Cancel", true);
                 }
+                if (cancel == null) {
+                    cancel = h.cancel;
+                }
                 boolean c = clickUp(cancel);
                 log("probe " + who + ": 仅此一次 never enabled, click 取消=" + c + " at +"
                         + (SystemClock.elapsedRealtime() - at) + "ms");
@@ -694,10 +700,52 @@ public class BootA11yService extends AccessibilityService {
         AccessibilityNodeInfo aerialRow;
         AccessibilityNodeInfo xgimiRow;
         AccessibilityNodeInfo once;
-        /** 这一轮是靠什么认出来的：id / label / text，写进日志方便以后排查 */
+        /** 按顺序认出来的"取消"，文字认不到时用它 */
+        AccessibilityNodeInfo cancel;
+        /** 这一轮是靠什么认出来的：id / label / text / order，写进日志方便以后排查 */
         String aerialVia;
         String xgimiVia;
         String onceVia;
+    }
+
+    /** 诊断用：把弹框窗口里的节点连同控件 ID 打一遍，看清这家固件给按钮起了什么名字 */
+    private static final boolean DUMP_CHOOSER_TREE = false;
+
+    private void dumpChooserTree(AccessibilityNodeInfo root, String who) {
+        java.util.ArrayDeque<AccessibilityNodeInfo> queue = new java.util.ArrayDeque<>();
+        queue.add(root);
+        int n = 0;
+        int guard = 0;
+        while (!queue.isEmpty() && guard++ < 200 && n < 40) {
+            AccessibilityNodeInfo node = queue.poll();
+            if (node == null) {
+                continue;
+            }
+            String text = node.getText() == null ? null : node.getText().toString();
+            String desc = node.getContentDescription() == null
+                    ? null : node.getContentDescription().toString();
+            String vid = node.getViewIdResourceName();
+            boolean hasId = vid != null && vid.length() > 0;
+            boolean hasText = (text != null && text.length() > 0) || (desc != null && desc.length() > 0);
+            if (hasId || hasText || node.isClickable()) {
+                n++;
+                android.graphics.Rect r = new android.graphics.Rect();
+                node.getBoundsInScreen(r);
+                log("node " + who + ": id=\"" + (hasId ? vid : "") + "\" cls=" + str(node.getClassName())
+                        + " txt=\"" + (text == null ? "" : text) + "\" desc=\""
+                        + (desc == null ? "" : desc) + "\" clk=" + node.isClickable()
+                        + " en=" + node.isEnabled() + " foc=" + node.isFocusable()
+                        + " sel=" + node.isSelected() + " bounds=" + r.left + "," + r.top
+                        + "," + r.right + "," + r.bottom);
+            }
+            for (int i = 0; i < node.getChildCount(); i++) {
+                AccessibilityNodeInfo child = node.getChild(i);
+                if (child != null) {
+                    queue.add(child);
+                }
+            }
+        }
+        log("node " + who + ": dumped " + n + " nodes");
     }
 
     /** AOSP 的选择框按钮 ID 是 android:id/button_once；厂商定制版前缀不同，按这个名字认 */
@@ -705,14 +753,23 @@ public class BootA11yService extends AccessibilityService {
         return vid != null && vid.contains("button_once");
     }
 
+    /** 节点在屏幕上的顶边，用来按上下顺序认按钮 */
+    private static int topOf(AccessibilityNodeInfo node) {
+        android.graphics.Rect r = new android.graphics.Rect();
+        node.getBoundsInScreen(r);
+        return r.top;
+    }
+
     /**
      * 一次广度遍历，把 Aerial 行 / 极米桌面行 / 仅此一次 全找出来，找齐就提前收手。
      * 认出哪个节点不写死中文：行用系统给的应用标签（跟着语言走），按钮先认控件 ID，
-     * 都对不上才落回写死的文字——所以换语言、换品牌时不会先崩掉，只是退到旧判据。
+     * 再按按钮的上下顺序认（框里三个按钮固定是"仅此一次 / 始终 / 取消"，极米这台机上
+     * 所有节点都没有 resource-id，实测 id 全空，只能靠顺序），最后才落回写死的文字。
      */
     private void scanChooser(AccessibilityNodeInfo root, Holder h) {
         java.util.ArrayDeque<AccessibilityNodeInfo> queue = new java.util.ArrayDeque<>();
         queue.add(root);
+        java.util.ArrayList<AccessibilityNodeInfo> buttons = new java.util.ArrayList<>();
         String aerialLabel = labelOf(AERIAL_PKG);
         String xgimiLabel = labelOf(XGIMI_HOME);
         AccessibilityNodeInfo aerialText = null;
@@ -728,6 +785,9 @@ public class BootA11yService extends AccessibilityService {
             String desc = node.getContentDescription() == null
                     ? null : node.getContentDescription().toString();
             String vid = node.getViewIdResourceName();
+            if (str(node.getClassName()).endsWith("Button")) {
+                buttons.add(node);
+            }
             if (onceText == null && isOnceId(vid)) {
                 onceText = node;
                 h.onceVia = "id:" + vid;
@@ -754,7 +814,7 @@ public class BootA11yService extends AccessibilityService {
                     h.xgimiVia = "text";
                 }
             }
-            if (aerialText != null && xgimiText != null && onceText != null) {
+            if (aerialText != null && xgimiText != null && onceText != null && buttons.size() >= 3) {
                 break;
             }
             for (int i = 0; i < node.getChildCount(); i++) {
@@ -763,6 +823,32 @@ public class BootA11yService extends AccessibilityService {
                     queue.add(child);
                 }
             }
+        }
+        // 选候选之前"仅此一次"和"始终"都是灰的、只有"取消"是亮的，所以：
+        // 未亮的按钮里最上面那个是"仅此一次"，亮着的那个（最下面）是"取消"。
+        // 这样不认字也能点，换语言不会失效。
+        if (buttons.size() == 3) {
+            AccessibilityNodeInfo disabledTop = null;
+            AccessibilityNodeInfo enabledBottom = null;
+            for (AccessibilityNodeInfo b : buttons) {
+                if (!b.isEnabled()) {
+                    if (disabledTop == null || topOf(b) < topOf(disabledTop)) {
+                        disabledTop = b;
+                    }
+                } else if (enabledBottom == null || topOf(b) > topOf(enabledBottom)) {
+                    enabledBottom = b;
+                }
+            }
+            if (onceText == null && disabledTop != null) {
+                onceText = disabledTop;
+                h.onceVia = "order:1of3";
+            } else if (onceText != null && disabledTop != null) {
+                // 文字认到了，顺带核对一下"按顺序认"会不会指到同一个按钮，不用换语言也能验
+                h.onceVia = h.onceVia + (topOf(disabledTop) == topOf(onceText)
+                        ? " (order agrees)" : " (order differs:" + topOf(disabledTop)
+                        + "/" + topOf(onceText) + ")");
+            }
+            h.cancel = enabledBottom;
         }
         h.aerialRow = clickableAncestor(aerialText);
         h.xgimiRow = clickableAncestor(xgimiText);
