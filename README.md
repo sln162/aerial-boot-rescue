@@ -67,7 +67,7 @@
 
 ## 装法
 
-1. 从 [Releases](https://github.com/sln162/aerial-boot-rescue/releases) 下 APK，覆盖安装失败就先卸载旧的（调试签名）
+1. 从 [Releases](https://github.com/sln162/aerial-home/releases) 下 APK，覆盖安装失败就先卸载旧的（调试签名）
 2. adb 三条：
 
 ```
