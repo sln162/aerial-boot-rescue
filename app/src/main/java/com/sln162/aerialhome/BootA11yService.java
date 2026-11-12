@@ -85,6 +85,8 @@ public class BootA11yService extends AccessibilityService {
         handler = new Handler(Looper.getMainLooper());
         startedAt = SystemClock.elapsedRealtime();
         log("bound, uptime=" + startedAt + "ms");
+        log("clocks: elapsed=" + startedAt + "ms, deepsleep since boot="
+                + (startedAt - SystemClock.uptimeMillis()) + "ms");
         ensureSelf(this, true);
         watchSettings();
         // 只关心框里那两个包：Aerial 后装、或者被升级之后，缓存的标签要重读
@@ -593,15 +595,21 @@ public class BootA11yService extends AccessibilityService {
     static volatile long RESTORED_AT = 0L;
     private static final long WATCH_CHOOSER_GAP_MS = 4000L;
 
-    /** 设备睡过去时 Handler 会被冻住，醒来后第一轮的间隔会突然变得很大。
-     *  实测屏保（Dreaming）留下的空档只有 15~40 秒，所以跨过 60 秒才算真休眠过。 */
-    private static final long WAKE_GAP_MS = 60000L;
+    /** 真休眠不再靠"两次 tick 间隔多大"去猜，而是问系统要账：
+     *  elapsedRealtime 含深度休眠、uptimeMillis 不含，二者之差就是本次开机累计睡过的时长。
+     *  两次 watch 之间这个差变大了，就说明设备真睡过——睡 20 秒也认，不再拿 60 秒当下限
+     *  （关机后一两分钟就开机，前者根本不进这个分支，前台停在哪都没人救）。 */
+    private static final long WAKE_DEEP_MS = 800L;
+    /** 兜底：万一某台机器 uptimeMillis 语义不正常（差值恒为 0），仍按"空档超过 20 秒"兜一次。
+     *  正常 tick 间隔是 0.4~1 秒，离它很远 */
+    private static final long WAKE_GAP_MS = 20000L;
     /** 醒来后给 20 秒时间等前台稳定：极米唤醒爬升慢的时候，10 秒窗口会在画面还没出来时就关掉 */
     private static final long WAKE_CHECK_MS = 20000L;
     /** pullQuiet 挂的 1px 窗口没有 Settle 帮忙收尾，自己 6 秒后清掉 */
     private static final long WAKE_HIDE_MS = 6000L;
 
     private long lastWatchAt = 0L;
+    private long lastDeepAt = 0L;
     private long wakeWindowUntil = 0L;
     // 唤醒窗口里连续几轮看不到任何前台：一次抖动不算黑屏，要连续两轮
     private int wakeNull = 0;
@@ -625,14 +633,20 @@ public class BootA11yService extends AccessibilityService {
                 long now = SystemClock.elapsedRealtime();
                 long gap = lastWatchAt == 0L ? 0L : now - lastWatchAt;
                 lastWatchAt = now;
-                if (gap > WAKE_GAP_MS) {
+                // 系统自己记的"本次开机累计睡了多久"：含休眠的钟减去不含休眠的钟
+                long deep = now - SystemClock.uptimeMillis();
+                long deepDelta = lastDeepAt == 0L ? 0L : deep - lastDeepAt;
+                lastDeepAt = deep;
+                if (deepDelta > WAKE_DEEP_MS || gap > WAKE_GAP_MS) {
                     // 睡了一觉，前面"见过 Aerial"不再作数；黑屏和落在极米桌面都交给同一套判据
                     wakeWindowUntil = now + WAKE_CHECK_MS;
                     everSawAerial = false;
                     stall = 0;
                     wakeNull = 0;
                     startEpisode();
-                    log("wake: slept " + gap + "ms, watching front for " + (WAKE_CHECK_MS / 1000) + "s");
+                    log("wake: slept " + Math.max(deepDelta, gap) + "ms (deep +" + deepDelta
+                            + ", gap " + gap + ", total " + deep + "), watching front for "
+                            + (WAKE_CHECK_MS / 1000) + "s");
                 }
                 if (XGIMI_FW.equals(front) && now - chooserAt > WATCH_CHOOSER_GAP_MS) {
                     // 前台突然变成极米框架窗口：事件漏了，这里补上
