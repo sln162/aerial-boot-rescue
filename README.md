@@ -68,7 +68,6 @@
 ## 装法
 
 1. 从 [Releases](https://github.com/sln162/aerial-home/releases) 下 APK，覆盖安装失败就先卸载旧的（调试签名）
-   - 1.9.9 起包名是 `com.sln162.aerialhome`（仓库改名叫 aerial-home 时一起换的）。装过旧包 `com.sln162.bootrescue` 的，先卸载旧包再装，并重做下面三条命令——换包名等于换应用，无障碍授权不继承
 2. adb 三条：
 
 ```
