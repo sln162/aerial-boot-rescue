@@ -74,6 +74,14 @@ public class BootA11yService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         BOUND = true;
+        instanceId = ++INSTANCE_SEQ;
+        // Handler 每次重绑都会新建一个，removeCallbacks 必须作用在旧的那个上：
+        // 先新建再 remove 等于对着空气喊话，旧 Handler 里的 tick/watch 照样跑（实测出现过
+        // 两条 tick 并行：stall 数到 5/2、Aerial 已经在前台了还多拉一次）。
+        if (handler != null) {
+            handler.removeCallbacks(tick);
+            handler.removeCallbacks(watch);
+        }
         handler = new Handler(Looper.getMainLooper());
         startedAt = SystemClock.elapsedRealtime();
         log("bound, uptime=" + startedAt + "ms");
@@ -90,10 +98,7 @@ public class BootA11yService extends AccessibilityService {
         } catch (Throwable t) {
             log("pack receiver failed: " + t);
         }
-        // 重新绑定时先把旧的循环摘掉：不摘就会变成两条 tick/watch 并行，
-        // 同一件事数两遍、判两遍（实测出现过 stall 数成 3/2、1.5 秒内拉两次 Aerial）
-        handler.removeCallbacks(tick);
-        handler.removeCallbacks(watch);
+        // 排新的循环（旧的已经在上面摘掉了）
         handler.postDelayed(tick, CHECK_MS);
         handler.postDelayed(watch, WATCH_MS);
         // 刚绑上就先看一眼：开机那次的弹框如果这会儿还在，立刻点掉
@@ -230,6 +235,16 @@ public class BootA11yService extends AccessibilityService {
     private long lastPullAt = 0L;
     // 本回合（一次开机尾巴 / 一次唤醒）已经救了几次
     private int episodePulls = 0;
+    // 每次重绑都会产生一个新的服务对象；被顶替的那个对象里的循环还活着，
+    // 但它的无障碍连接已经废了、读前台永远是 null，会误判"黑屏"去拉 Aerial。
+    // 只让最新那个对象做救援，旧的发现序号变了就静默退出。
+    private static volatile int INSTANCE_SEQ = 0;
+    private int instanceId = 0;
+
+    /** 我是不是当前最新的那个服务对象；不是就别再动作了 */
+    private boolean superseded() {
+        return instanceId != INSTANCE_SEQ;
+    }
 
     /** 一个新回合开始：开机尾巴、或者一次唤醒。额度按回合算，不按进程算——
      *  进程可以连着活好几天，拿进程当回合的话额度用完就永远不再救。 */
@@ -297,6 +312,10 @@ public class BootA11yService extends AccessibilityService {
         @Override
         public void run() {
             long now = SystemClock.elapsedRealtime();
+            if (superseded()) {
+                log("superseded instance, stand down");
+                return;
+            }
             if (now - startedAt > WINDOW_MS) {
                 log("window closed");
                 return;
@@ -342,6 +361,7 @@ public class BootA11yService extends AccessibilityService {
                     return;
                 }
                 log("boot finished and still nothing, aerial never in front, pulling aerial");
+                stall = 0;
                 pull();
                 return;
             }
@@ -596,6 +616,10 @@ public class BootA11yService extends AccessibilityService {
     private final Runnable watch = new Runnable() {
         @Override
         public void run() {
+            if (superseded()) {
+                log("superseded instance, watch off");
+                return;
+            }
             try {
                 String front = frontPackage();
                 long now = SystemClock.elapsedRealtime();
@@ -668,6 +692,9 @@ public class BootA11yService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (superseded()) {
+            return;
+        }
         if (event == null || event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             return;
         }
