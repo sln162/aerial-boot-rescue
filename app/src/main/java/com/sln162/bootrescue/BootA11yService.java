@@ -163,6 +163,8 @@ public class BootA11yService extends AccessibilityService {
             }
             if (ok) {
                 logLine(context, "restored self into a11y list");
+                // 刚把自己写回列表的这几秒里事件最容易丢，记下来让看门狗临时加密
+                RESTORED_AT = SystemClock.elapsedRealtime();
             }
             try {
                 Settings.Secure.putInt(context.getContentResolver(),
@@ -480,6 +482,15 @@ public class BootA11yService extends AccessibilityService {
 
     /** 事件偶尔会漏（实测 10 次漏 2 次），所以再加一个 1 秒一次的看门狗兜底 */
     private static final long WATCH_MS = 1000L;
+    /**
+     * 刚绑上的一小段时间最容易丢事件（开机后极米反复改写无障碍列表，服务刚恢复进去，
+     * 那一下的事件就到不了），这段窗口里把看门狗加密到 400ms，把"事件漏了要等 1 秒"
+     * 压到 0.4 秒；平时仍按 1 秒跑，不改常驻开销。
+     */
+    private static final long WATCH_FAST_MS = 400L;
+    private static final long WATCH_FAST_WIN_MS = 30000L;
+    /** 最近一次把自己写回无障碍列表的时刻；那之后的一小段是丢事件高危期 */
+    static volatile long RESTORED_AT = 0L;
     private static final long WATCH_CHOOSER_GAP_MS = 4000L;
 
     /** 设备睡过去时 Handler 会被冻住，醒来后第一轮的间隔会突然变得很大。
@@ -555,7 +566,9 @@ public class BootA11yService extends AccessibilityService {
                 log("watch failed: " + t);
             }
             if (handler != null) {
-                handler.postDelayed(this, WATCH_MS);
+                long now = SystemClock.elapsedRealtime();
+                long anchor = Math.max(startedAt, RESTORED_AT);
+                handler.postDelayed(this, now - anchor < WATCH_FAST_WIN_MS ? WATCH_FAST_MS : WATCH_MS);
             }
         }
     };
