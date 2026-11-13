@@ -44,6 +44,12 @@ public class BootA11yService extends AccessibilityService {
 
     private static long LAST_ENSURE = 0L;
     private static volatile boolean WRITING = false;
+    /** 上一次打印过的无障碍列表内容；内容没变就不再打 */
+    private static String LAST_LIST_LOGGED = null;
+    /** 日志落盘用同一把锁：轮转和写入不能交叉，否则一段日志可能被切到两个文件里 */
+    private static final Object LOG_LOCK = new Object();
+    /** 日志过了这个体积就换到 rescue.log.1，只留一代（出问题时还有上一段可看） */
+    private static final long LOG_MAX_BYTES = 512L * 1024L;
     /** 服务真的被系统绑上了没有。界面拿它判断"在不在运行"，比只看无障碍开关可靠 */
     private static volatile boolean BOUND = false;
 
@@ -54,6 +60,8 @@ public class BootA11yService extends AccessibilityService {
     private Handler handler;
     private long startedAt;
     private ContentObserver observer;
+    /** 包变更接收器已经注册过没有：重绑时先摘后挂，避免叠层回调 */
+    private boolean packRegistered = false;
 
     private final Runnable ensureRun = new Runnable() {
         @Override
@@ -91,12 +99,22 @@ public class BootA11yService extends AccessibilityService {
         watchSettings();
         // 只关心框里那两个包：Aerial 后装、或者被升级之后，缓存的标签要重读
         try {
+            // 同一个接收器对象注册两次不会报错，但同一次包变更会回调两遍（重绑几次就叠几层），
+            // 所以注册前先摘掉上一次的。
+            if (packRegistered) {
+                try {
+                    unregisterReceiver(packChanges);
+                } catch (Throwable ignored) {
+                }
+                packRegistered = false;
+            }
             IntentFilter packFilter = new IntentFilter();
             packFilter.addAction(Intent.ACTION_PACKAGE_ADDED);
             packFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
             packFilter.addAction(Intent.ACTION_PACKAGE_REPLACED);
             packFilter.addDataScheme("package");
             registerReceiver(packChanges, packFilter);
+            packRegistered = true;
         } catch (Throwable t) {
             log("pack receiver failed: " + t);
         }
@@ -129,6 +147,16 @@ public class BootA11yService extends AccessibilityService {
 
     private void watchSettings() {
         try {
+            // 重绑时会新建服务对象，旧对象的观察者还挂在系统上：不摘掉就两个一起回调，
+            // 同一次列表变更被处理两遍（实测同一次变更出现两条 "a11y list changed"，
+            // 相隔 6~62 毫秒），ensureSelf 也跟着多跑一遍。先摘后挂。
+            if (observer != null) {
+                try {
+                    getContentResolver().unregisterContentObserver(observer);
+                } catch (Throwable ignored) {
+                }
+                observer = null;
+            }
             ContentResolver cr = getContentResolver();
             observer = new ContentObserver(handler) {
                 @Override
@@ -161,11 +189,18 @@ public class BootA11yService extends AccessibilityService {
                     BootA11yService.class.getName());
             String flat = me.flattenToString();
             String cur = readList(context);
-            logLine(context, "ensure cur=" + (cur == null ? "null" : cur));
+            // 只在列表真的变了才打印：开机那阵子同一次写回会触发好几次回调，
+            // 每次打一整行完整列表会把真信号埋掉（两天攒了 218 行）。
+            boolean listChanged = (cur == null) ? (LAST_LIST_LOGGED != null)
+                    : !cur.equals(LAST_LIST_LOGGED);
+            if (listChanged) {
+                LAST_LIST_LOGGED = cur;
+                logLine(context, "ensure cur=" + (cur == null ? "null" : cur));
+            }
             // 只管自己。别人（包括 Aerial 自己的守护）要不要开无障碍，是用户的授权决定，
             // 我们不替他做——那等于悄悄给另一个应用发了一张无障碍权限。
             if (cur != null && cur.contains(flat)) {
-                if (!cur.contains("app.orchard.tv/")) {
+                if (!cur.contains("app.orchard.tv/") && listChanged) {
                     logLine(context, "warn: a11y list has no aerial guard, left alone");
                 }
                 return;
@@ -187,8 +222,12 @@ public class BootA11yService extends AccessibilityService {
                 RESTORED_AT = SystemClock.elapsedRealtime();
             }
             try {
-                Settings.Secure.putInt(context.getContentResolver(),
-                        Settings.Secure.ACCESSIBILITY_ENABLED, 1);
+                // 已经是 1 就别再写：每写一次都会触发一次列表变更回调，白跑一轮 ensureSelf
+                if (Settings.Secure.getInt(context.getContentResolver(),
+                        Settings.Secure.ACCESSIBILITY_ENABLED, 0) != 1) {
+                    Settings.Secure.putInt(context.getContentResolver(),
+                            Settings.Secure.ACCESSIBILITY_ENABLED, 1);
+                }
             } catch (Throwable ignored) {
             }
         } catch (Throwable t) {
@@ -508,6 +547,8 @@ public class BootA11yService extends AccessibilityService {
     /** 极米原桌面：弹框默认选中的就是它，被它顶上来不算到站 */
     private static final String XGIMI_HOME = "com.xgimi.home";
     private static final String ANDROID_FW = "android";
+    /** 系统界面：唤醒瞬间会短暂当前台，判"有没有人在用设备"时不算数 */
+    private static final String SYSTEM_UI = "com.android.systemui";
     private static final String AOSP_CHOOSER = "com.android.internal.app.ResolverActivity";
     /** 连续事件冷却：typeWindowContentChanged 会连刷，3 秒内只处理一次 */
     private static final long CHOOSER_COOLDOWN_MS = 3000L;
@@ -603,16 +644,20 @@ public class BootA11yService extends AccessibilityService {
     /** 兜底：万一某台机器 uptimeMillis 语义不正常（差值恒为 0），仍按"空档超过 20 秒"兜一次。
      *  正常 tick 间隔是 0.4~1 秒，离它很远 */
     private static final long WAKE_GAP_MS = 20000L;
-    /** 醒来后给 20 秒时间等前台稳定：极米唤醒爬升慢的时候，10 秒窗口会在画面还没出来时就关掉 */
-    private static final long WAKE_CHECK_MS = 20000L;
     /** pullQuiet 挂的 1px 窗口没有 Settle 帮忙收尾，自己 6 秒后清掉 */
     private static final long WAKE_HIDE_MS = 6000L;
 
     private long lastWatchAt = 0L;
     private long lastDeepAt = 0L;
-    private long wakeWindowUntil = 0L;
     // 唤醒窗口里连续几轮看不到任何前台：一次抖动不算黑屏，要连续两轮
     private int wakeNull = 0;
+    /** 唤醒之后要救的这一回合开着没有。
+     *  旧写法拿 20 秒当门槛：时间一到就 window closed，慢唤醒那次白等、也再没有补救。
+     *  这里改成按结果收尾——见到 Aerial、三次额度用完、或者发现别人在用设备（连续两轮），
+     *  三条都不用猜秒数，慢就多等几轮，快就早点收工。 */
+    private boolean wakeOpen = false;
+    /** 唤醒后前台连续几轮是"既不是 Aerial、也不是极米桌面/弹框"的别人 */
+    private int wakeOther = 0;
 
     private final Runnable wakeHide = new Runnable() {
         @Override
@@ -626,6 +671,7 @@ public class BootA11yService extends AccessibilityService {
         public void run() {
             if (superseded()) {
                 log("superseded instance, watch off");
+                hideOverlay();
                 return;
             }
             try {
@@ -639,14 +685,15 @@ public class BootA11yService extends AccessibilityService {
                 lastDeepAt = deep;
                 if (deepDelta > WAKE_DEEP_MS || gap > WAKE_GAP_MS) {
                     // 睡了一觉，前面"见过 Aerial"不再作数；黑屏和落在极米桌面都交给同一套判据
-                    wakeWindowUntil = now + WAKE_CHECK_MS;
+                    wakeOpen = true;
                     everSawAerial = false;
                     stall = 0;
                     wakeNull = 0;
+                    wakeOther = 0;
                     startEpisode();
                     log("wake: slept " + Math.max(deepDelta, gap) + "ms (deep +" + deepDelta
-                            + ", gap " + gap + ", total " + deep + "), watching front for "
-                            + (WAKE_CHECK_MS / 1000) + "s");
+                            + ", gap " + gap + ", total " + deep
+                            + "), keep watching until aerial is in front");
                 }
                 if (XGIMI_FW.equals(front) && now - chooserAt > WATCH_CHOOSER_GAP_MS) {
                     // 前台突然变成极米框架窗口：事件漏了，这里补上
@@ -671,18 +718,29 @@ public class BootA11yService extends AccessibilityService {
                 // 这里不看屏幕亮没亮：Handler 能跑到这一轮就说明设备已经醒了（真睡着时它是冻住的）。
                 // 唤醒爬升期（屏还没亮）就把 Aerial 顶上去，亮屏第一帧才是 Aerial；等屏亮再拉会先露原桌面。
                 // 拉完不清窗口：万一这次 startActivity 被系统挡掉，5 秒冷却过后还有再试一次的机会。
-                if (wakeWindowUntil != 0L) {
+                if (wakeOpen) {
                     if (front == null) {
                         wakeNull++;
                     } else {
                         wakeNull = 0;
                     }
-                    if (now > wakeWindowUntil) {
-                        wakeWindowUntil = 0L;
-                        log("wake: window closed, front=" + front);
-                    } else if (AERIAL_PKG.equals(front)) {
-                        wakeWindowUntil = 0L;
-                        log("wake: aerial in front");
+                    // 既不是 Aerial，也不是极米桌面/极米弹框：有人自己在用别的应用。
+                    // 系统界面（systemui）在唤醒瞬间会短暂顶上来，它不算"有人在用"，否则会误收工。
+                    boolean someoneElse = front != null && !AERIAL_PKG.equals(front)
+                            && !XGIMI_HOME.equals(front) && !XGIMI_FW.equals(front)
+                            && !SYSTEM_UI.equals(front);
+                    wakeOther = someoneElse ? wakeOther + 1 : 0;
+                    if (AERIAL_PKG.equals(front)) {
+                        wakeOpen = false;
+                        log("wake: aerial in front, close");
+                    } else if (episodePulls >= PULL_CAP) {
+                        // 额度用完还没到站：收工，交给下一次唤醒/下一次弹框，别无限拉
+                        wakeOpen = false;
+                        log("wake: cap reached (" + episodePulls + "/" + PULL_CAP + "), close");
+                    } else if (wakeOther >= 3) {
+                        // 连着三轮都是别人的应用：用户自己在用，别抢（这也是"醒着但没人需要救"的收尾条件）
+                        wakeOpen = false;
+                        log("wake: front=" + front + ", someone in charge, close");
                     } else if ((XGIMI_HOME.equals(front) || wakeNull >= 2)
                             && now - chooserAt > WATCH_CHOOSER_GAP_MS
                             && allowPull()) {
@@ -775,6 +833,11 @@ public class BootA11yService extends AccessibilityService {
 
         @Override
         public void run() {
+            // 被重绑顶替的旧对象已经读不到前台（getRootInActiveWindow 恒 return null），
+            // 留着这条链会误判"框还在"一直点；新对象自己被绑上时会先看一眼有没有框。
+            if (superseded()) {
+                return;
+            }
             long ms = SystemClock.elapsedRealtime() - at;
             // 已经在 Aerial 了就别再动：省掉空转，也不跟 Aerial 自己的守护抢动作
             if (n > 0 && AERIAL_PKG.equals(frontPackage())) {
@@ -1055,7 +1118,7 @@ public class BootA11yService extends AccessibilityService {
      * 点候选行没成功（窗口还没收输入）：Aerial 已经在前台就收工，否则再点一次行。
      */
     private void retryRow(String who, long at, int k) {
-        if (k > 2 || handler == null) {
+        if (k > 2 || handler == null || superseded()) {
             return;
         }
         if (AERIAL_PKG.equals(frontPackage())) {
@@ -1112,7 +1175,7 @@ public class BootA11yService extends AccessibilityService {
      * 框一直留在屏幕上。没走就再点一次，最多两次——不是无脑连点：框已经走了就立刻停手。
      */
     private void verifyDismiss(String who, long at, int k) {
-        if (k > 2 || handler == null) {
+        if (k > 2 || handler == null || superseded()) {
             return;
         }
         String front = frontPackage();
@@ -1219,6 +1282,10 @@ public class BootA11yService extends AccessibilityService {
 
         @Override
         public void run() {
+            if (superseded()) {
+                hideOverlay();
+                return;
+            }
             long ms = SystemClock.elapsedRealtime() - at;
             String front = frontPackage();
             log("settle " + who + ": check#" + n + " front=" + front + " at +" + ms + "ms");
@@ -1354,10 +1421,21 @@ public class BootA11yService extends AccessibilityService {
     @Override
     public void onDestroy() {
         BOUND = false;
-        try {
-            unregisterReceiver(packChanges);
-        } catch (Throwable ignored) {
+        if (packRegistered) {
+            try {
+                unregisterReceiver(packChanges);
+            } catch (Throwable ignored) {
+            }
+            packRegistered = false;
         }
+        if (observer != null) {
+            try {
+                getContentResolver().unregisterContentObserver(observer);
+            } catch (Throwable ignored) {
+            }
+            observer = null;
+        }
+        hideOverlay();
         super.onDestroy();
     }
 
@@ -1379,13 +1457,34 @@ public class BootA11yService extends AccessibilityService {
                 return;
             }
             dir.mkdirs();
-            String line = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
-                    .format(new Date()) + " " + msg + "\n";
-            FileOutputStream out = new FileOutputStream(new File(dir, "rescue.log"), true);
-            try {
-                out.write(line.getBytes("UTF-8"));
-            } finally {
-                out.close();
+            File f = new File(dir, "rescue.log");
+            // 墙钟在开机早期还没校准（日志里会出现 08:00:0x 一段，看着像另一天）。
+            // 每行再带一个开机内时钟 u=，跨开机的时间线靠它对齐，不靠猜。
+            long up = SystemClock.elapsedRealtime();
+            String line = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(new Date())
+                    + " u=" + up + " " + msg + "\n";
+            synchronized (LOG_LOCK) {
+                // 日志不封顶会一直涨（两天 326 KB、2800 行）。过 512 KB 换到 .1：
+                // 旧的一代直接替换，出问题时还有上一段可查，平时读尾部不受影响。
+                if (f.length() > LOG_MAX_BYTES) {
+                    try {
+                        File old = new File(dir, "rescue.log.1");
+                        if (old.exists() && !old.delete()) {
+                            // 删不掉就继续往当前文件写，宁可文件长一点，也不丢日志
+                            throw new java.io.IOException("cannot replace rescue.log.1");
+                        }
+                        if (!f.renameTo(old)) {
+                            throw new java.io.IOException("cannot rename rescue.log");
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+                FileOutputStream out = new FileOutputStream(f, true);
+                try {
+                    out.write(line.getBytes("UTF-8"));
+                } finally {
+                    out.close();
+                }
             }
         } catch (Throwable ignored) {
         }
