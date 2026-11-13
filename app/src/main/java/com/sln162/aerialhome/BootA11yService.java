@@ -59,9 +59,17 @@ public class BootA11yService extends AccessibilityService {
 
     private Handler handler;
     private long startedAt;
-    private ContentObserver observer;
-    /** 包变更接收器已经注册过没有：重绑时先摘后挂，避免叠层回调 */
-    private boolean packRegistered = false;
+    /**
+     * 观察者与包变更接收器必须是「全进程唯一」的 static。
+     * Android 每次重绑都是 new 一个服务对象，旧对象还活着、它注册在系统上的监听也还在；
+     * 用实例变量只摘得掉「自己字段里那个」，旧的照样回调——实测同一次列表变更仍出两条
+     * "a11y list changed"。只有静态字段才跨得过「新对象」这道墙。
+     * owner 记的是注册它的那个实例：旧对象后来被销毁时，不能把新对象的监听顺手摘掉。
+     */
+    private static ContentObserver sObserver = null;
+    private static int sObserverOwner = 0;
+    private static BroadcastReceiver sPacks = null;
+    private static int sPacksOwner = 0;
 
     private final Runnable ensureRun = new Runnable() {
         @Override
@@ -93,28 +101,47 @@ public class BootA11yService extends AccessibilityService {
         handler = new Handler(Looper.getMainLooper());
         startedAt = SystemClock.elapsedRealtime();
         log("bound, uptime=" + startedAt + "ms");
+        // 两个钟是分两次读的，读的先后会差出几毫秒，别显示出负数
         log("clocks: elapsed=" + startedAt + "ms, deepsleep since boot="
-                + (startedAt - SystemClock.uptimeMillis()) + "ms");
+                + Math.max(0L, startedAt - SystemClock.uptimeMillis()) + "ms");
+        // 同一次开机里服务被重绑（极米改写无障碍列表就会），新对象从零开始，
+        // 会把「刚看过 Aerial」当成黑屏再拉一次——极米随即又走一遍 HOME 解析，
+        // 用户看到的就是「弹框两次」。这里把同一开机内刚记下的「见过」继承过来。
+        if (inheritSeen()) {
+            everSawAerial = true;
+            log("seen: aerial was already in front this boot, inherited (no extra pull)");
+        }
         ensureSelf(this, true);
         watchSettings();
         // 只关心框里那两个包：Aerial 后装、或者被升级之后，缓存的标签要重读
         try {
-            // 同一个接收器对象注册两次不会报错，但同一次包变更会回调两遍（重绑几次就叠几层），
-            // 所以注册前先摘掉上一次的。
-            if (packRegistered) {
+            // 重绑是新建对象：要摘的是「上一个对象注册的那个」，只能靠静态字段找到它
+            if (sPacks != null) {
                 try {
-                    unregisterReceiver(packChanges);
+                    unregisterReceiver(sPacks);
                 } catch (Throwable ignored) {
                 }
-                packRegistered = false;
+                sPacks = null;
+                sPacksOwner = 0;
             }
+            sPacks = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    String pkg = intent == null ? null : intent.getData() == null
+                            ? null : intent.getData().getSchemeSpecificPart();
+                    if (pkg == null || (!AERIAL_PKG.equals(pkg) && !XGIMI_HOME.equals(pkg))) {
+                        return;
+                    }
+                    invalidateLabels(pkg + " " + (intent.getAction() == null ? "" : intent.getAction()));
+                }
+            };
             IntentFilter packFilter = new IntentFilter();
             packFilter.addAction(Intent.ACTION_PACKAGE_ADDED);
             packFilter.addAction(Intent.ACTION_PACKAGE_CHANGED);
             packFilter.addAction(Intent.ACTION_PACKAGE_REPLACED);
             packFilter.addDataScheme("package");
-            registerReceiver(packChanges, packFilter);
-            packRegistered = true;
+            registerReceiver(sPacks, packFilter);
+            sPacksOwner = instanceId;
         } catch (Throwable t) {
             log("pack receiver failed: " + t);
         }
@@ -128,9 +155,13 @@ public class BootA11yService extends AccessibilityService {
                 try {
                     AccessibilityNodeInfo root = chooserRootQuiet();
                     if (root != null) {
-                        log("bound: chooser already up at uptime="
-                                + SystemClock.elapsedRealtime() + "ms, handle now");
-                        killChooser("bound@" + SystemClock.elapsedRealtime(), SystemClock.elapsedRealtime());
+                        long now = SystemClock.elapsedRealtime();
+                        // 记一笔「刚处理过框」：不记的话 4 秒冷却等于没生效，紧接着看门狗
+                        // 又起一轮同样的探针去重复点行（第 1、3 次开机都出现过这份重复）。
+                        // 只挡 2 秒而不是挡满 4 秒：万一这一下点空了，重试也别推后太久。
+                        chooserAt = now - (WATCH_CHOOSER_GAP_MS - BOUND_PROBE_GAP_MS);
+                        log("bound: chooser already up at uptime=" + now + "ms, handle now");
+                        killChooser("bound@" + now, now);
                         try {
                             root.recycle();
                         } catch (Throwable ignored) {
@@ -168,14 +199,16 @@ public class BootA11yService extends AccessibilityService {
             cr.registerContentObserver(
                     Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES),
                     false, next);
-            if (observer != null) {
+            // 摘的是静态字段里那个——它可能是上一个服务对象注册的
+            if (sObserver != null) {
                 try {
-                    cr.unregisterContentObserver(observer);
+                    cr.unregisterContentObserver(sObserver);
                 } catch (Throwable ignored) {
                 }
                 log("a11y watch: old observer let go");
             }
-            observer = next;
+            sObserver = next;
+            sObserverOwner = instanceId;
         } catch (Throwable t) {
             log("watch failed: " + t);
         }
@@ -301,6 +334,50 @@ public class BootA11yService extends AccessibilityService {
     }
 
     /**
+     * 「本次开机已经见过 Aerial」要落盘，不能被重绑弄丢。
+     *
+     * 只在同一开机内继承，而且只桥接两分钟内的短空档：开机标识（boot_id）每次开机都变，
+     * 所以跨重启、跨关机再开，天然不继承——那两种情况必须重新判黑屏。
+     * 唤醒（深度休眠）时由 clearSeen() 主动清掉：睡了一觉「见过」就不再作数。
+     */
+    private static final long SEEN_TTL_MS = 120000L;
+
+    private void markSeen() {
+        everSawAerial = true;
+        try {
+            String bid = bootId();
+            prefs().edit()
+                    .putString("seen_boot", bid == null ? "" : bid)
+                    .putLong("seen_at", SystemClock.elapsedRealtime())
+                    .apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void clearSeen() {
+        everSawAerial = false;
+        try {
+            prefs().edit().remove("seen_boot").remove("seen_at").apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private boolean inheritSeen() {
+        try {
+            String bid = bootId();
+            String sb = prefs().getString("seen_boot", "");
+            long sat = prefs().getLong("seen_at", 0L);
+            if (bid == null || sb == null || !bid.equals(sb) || sat <= 0L) {
+                return false;
+            }
+            long now = SystemClock.elapsedRealtime();
+            return now >= sat && now - sat <= SEEN_TTL_MS;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
      * 唯一的一道闸：距离上一次"救"够久、且本回合没超过次数上限，才允许再拉一次。
      *
      * 冷却判断跨进程也要有效（实测极米会在开机时改无障碍列表、服务重绑，甚至换掉进程，
@@ -372,7 +449,7 @@ public class BootA11yService extends AccessibilityService {
             }
             String front = frontPackage();
             if (front != null && AERIAL_PKG.equals(front)) {
-                everSawAerial = true;
+                markSeen();
                 startEpisode();
                 log("aerial in front, done");
                 return;
@@ -605,18 +682,8 @@ public class BootA11yService extends AccessibilityService {
         log("label: cleared (" + why + ")");
     }
 
-    /** 框里的 APK 装上了/换了/卸了：清掉缓存的标签，下次弹框重新读 */
-    private final BroadcastReceiver packChanges = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            String pkg = intent == null ? null : intent.getData() == null
-                    ? null : intent.getData().getSchemeSpecificPart();
-            if (pkg == null || (!AERIAL_PKG.equals(pkg) && !XGIMI_HOME.equals(pkg))) {
-                return;
-            }
-            invalidateLabels(pkg + " " + (intent.getAction() == null ? "" : intent.getAction()));
-        }
-    };
+    /** 框里的 APK 装上了/换了/卸了：清掉缓存的标签，下次弹框重新读。
+     *  接收器本体在 onServiceConnected 里建（要跟着实例走，注册用的对象存在静态字段里）。 */
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
@@ -638,6 +705,9 @@ public class BootA11yService extends AccessibilityService {
     /** 最近一次把自己写回无障碍列表的时刻；那之后的一小段是丢事件高危期 */
     static volatile long RESTORED_AT = 0L;
     private static final long WATCH_CHOOSER_GAP_MS = 4000L;
+    /** 绑上时自己已经处理过框了，让看门狗晚这么久再起同样的探针：
+     *  既不重复点行（反复点会把「变亮」的过程重置），也不把第一次点击失败时的重试推后太多 */
+    private static final long BOUND_PROBE_GAP_MS = 2000L;
 
     /** 真休眠不再靠"两次 tick 间隔多大"去猜，而是问系统要账：
      *  elapsedRealtime 含深度休眠、uptimeMillis 不含，二者之差就是本次开机累计睡过的时长。
@@ -687,9 +757,9 @@ public class BootA11yService extends AccessibilityService {
                 long deepDelta = lastDeepAt == 0L ? 0L : deep - lastDeepAt;
                 lastDeepAt = deep;
                 if (deepDelta > WAKE_DEEP_MS || gap > WAKE_GAP_MS) {
-                    // 睡了一觉，前面"见过 Aerial"不再作数；黑屏和落在极米桌面都交给同一套判据
+                    // 睡了一觉，前面「见过 Aerial」不再作数；黑屏和落在极米桌面都交给同一套判据
                     wakeOpen = true;
-                    everSawAerial = false;
+                    clearSeen();
                     stall = 0;
                     wakeNull = 0;
                     wakeOther = 0;
@@ -1294,6 +1364,9 @@ public class BootA11yService extends AccessibilityService {
             log("settle " + who + ": check#" + n + " front=" + front + " at +" + ms + "ms");
             if (AERIAL_PKG.equals(front)) {
                 hideOverlay();
+                // 这里比 tick（2 秒一轮）更早看到 Aerial：先记下"见过"，
+                // 万一紧接着服务重绑，新对象也能继承，不会把刚起来的 Aerial 再拉一次
+                markSeen();
                 // 超过 10 秒的样本是设备睡过去把 Handler 冻住造成的，记了会污染统计
                 if (recAt != at && ms <= 10000L) {
                     recAt = at;
@@ -1423,20 +1496,25 @@ public class BootA11yService extends AccessibilityService {
 
     @Override
     public void onDestroy() {
-        BOUND = false;
-        if (packRegistered) {
-            try {
-                unregisterReceiver(packChanges);
-            } catch (Throwable ignored) {
-            }
-            packRegistered = false;
+        // 只有「最新的那个对象」下线才算真下线；旧对象被回收时不能把新对象的监听/状态摘掉
+        if (instanceId == INSTANCE_SEQ) {
+            BOUND = false;
         }
-        if (observer != null) {
+        if (sPacks != null && sPacksOwner == instanceId) {
             try {
-                getContentResolver().unregisterContentObserver(observer);
+                unregisterReceiver(sPacks);
             } catch (Throwable ignored) {
             }
-            observer = null;
+            sPacks = null;
+            sPacksOwner = 0;
+        }
+        if (sObserver != null && sObserverOwner == instanceId) {
+            try {
+                getContentResolver().unregisterContentObserver(sObserver);
+            } catch (Throwable ignored) {
+            }
+            sObserver = null;
+            sObserverOwner = 0;
         }
         hideOverlay();
         super.onDestroy();
@@ -1444,7 +1522,9 @@ public class BootA11yService extends AccessibilityService {
 
     @Override
     public boolean onUnbind(android.content.Intent intent) {
-        BOUND = false;
+        if (instanceId == INSTANCE_SEQ) {
+            BOUND = false;
+        }
         return super.onUnbind(intent);
     }
 

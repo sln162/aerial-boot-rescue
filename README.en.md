@@ -1,12 +1,12 @@
-[中文](README.md) | [English](README.en.md)
+[中文](README.md) | [English](README.en.md) | [Project page](https://sln162.github.io/aerial-home/)
 
 # Aerial Home Direct
+
+**Make your Aerial the home screen: no chooser on Home, no flash of the XGIMI launcher, Home lands on Aerial in 0.4 s, and no black screen, freeze or unresponsiveness. No home-preference record, no disabling XGIMI's own launcher, and no dual-home setup.**
 
 On XGIMI projectors (the Android 9 era firmware), when you use Aerial as your home screen, pressing the Home key pops up the system's "which home screen?" chooser first. It takes a few seconds to come back, and sometimes it just hangs.
 
 This accessibility service dismisses that chooser and brings Aerial to the front, **0.4 s from key press to the home screen**. It also covers the black screen right after boot.
-
-It does not write the home preference, does not send a Back key, does not disable XGIMI's own launcher, and does not require setting up dual home.
 
 ![UI](docs/ui.png)
 
@@ -14,7 +14,7 @@ It does not write the home preference, does not send a Back key, does not disabl
 
 - **Pressing Home inside another app hangs on the chooser for a few seconds**: the service dismisses it the moment it appears, then pulls Aerial up directly.
 - **Dual-home rules randomly disappear**: nothing depends on those records — zero preferred-home entries still works.
-- **All-black screen after boot, or landing back on the XGIMI launcher after a shutdown**: after boot it needs two consecutive rounds with no usable foreground before it acts; after a shutdown (deep sleep) the wake-up trigger uses the system's own sleep accounting, so even a ten-second sleep counts (see "When it decides to rescue").
+- **All-black screen after boot, or landing back on the XGIMI launcher after a shutdown**: after boot it needs two consecutive rounds with no usable foreground before it acts; after a shutdown or a sleep it uses the system's own sleep accounting, so even a ten-second sleep counts (see "When it steps in").
 
 ## Compatibility
 
@@ -56,23 +56,12 @@ So it uses about 1/23 of Aerial's CPU and 1/10 of its memory.
 
 The cost, stated plainly: the once-a-second watchdog is about 4.5 ms of CPU and interrupts CPU idle (negligible for a projector on mains power); while the device is truly asleep the Handler is frozen and nothing is spent, so standby power is unaffected.
 
-## How it recognizes things
+## When it steps in
 
-It finds the "Aerial" row by the label the system provides, so it works in any language; for "Just once" it first checks the view ID, then several languages' text, and if it recognizes nothing it does not guess — it taps the only button that is enabled before a candidate is chosen (Cancel), which dismisses the chooser anyway, and then pulls Aerial itself. It never gambles on "which one is Just once" by position or order: getting that wrong taps "Always" and writes the preference onto the vendor launcher.
-
-## When it decides to rescue
-
-Two entry points, one gate.
-
-**Boot**: after the boot animation (`init.svc.bootanim`) stops, it needs two consecutive rounds with no usable foreground before pulling Aerial once. If any other window is visible, it leaves things alone.
-
-**Wake**: the length of the sleep does not matter. The system keeps two clocks — `elapsedRealtime` includes deep sleep, `uptimeMillis` does not — so if the difference between two watchdog rounds grows, the device really slept, even for a dozen seconds. A second backstop treats a watchdog gap over 20 seconds as a wake too, which catches the case where the process was frozen by the system without the device actually sleeping.
-
-After waking, either the XGIMI launcher in front or nothing at all (a black screen) counts as "should rescue"; an empty foreground needs two consecutive rounds, so a single flicker does not trigger it. Any other app is never taken over.
-
-Both paths, plus "pull Aerial right after dismissing the chooser", share one gate: at least 5 seconds between rescues, and at most 3 rescues per episode. The budget is per episode, not per process — a process can live for days, and a per-process budget would never reset.
-
-When the system rebinds the service, only the newest instance acts: the old one has lost its accessibility connection and always reads an empty foreground, so leaving it alive means it misreads a black screen and pulls Aerial again while Aerial is already up.
+- **Boot**: after the boot screen is gone, two consecutive rounds with nothing usable in front before it pulls Aerial once; if any real window is in front it does nothing
+- **Power off and on, or waking from sleep**: if the XGIMI launcher or a black screen is in front, it brings Aerial back; if you are already in another app it stays out
+- **Home key**: the chooser is dismissed the moment it appears, and Aerial is sent to the front at the same instant
+- At least 5 seconds between rescues, at most 3 per boot or per wake, then it stops instead of pulling forever
 
 ## A problem met during development
 
