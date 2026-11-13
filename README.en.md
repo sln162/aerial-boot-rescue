@@ -96,6 +96,18 @@ settings put secure accessibility_enabled 1
 
 `pm grant` is not optional: XGIMI rewrites the accessibility list at the moment it unlocks and drops third-party services. Without that permission the service cannot write itself back.
 
+## Updating
+
+Install over the existing copy. No uninstall, no re-granting.
+
+```
+adb install -r AerialHome-<version>.apk
+```
+
+Then open the app and check "Running state": green "OK" means done. If not, toggle the accessibility switch off and on — XGIMI rewrites the accessibility list when it unlocks; the service normally writes itself back, and only if that fails do you need to turn it on by hand.
+
+A `bound, uptime=` line in the log means the system has bound the service.
+
 ## What the UI shows
 
 | Section | Content |
@@ -127,7 +139,3 @@ No window pops up at boot; open the app afterwards to see how many times it acte
 ```
 adb shell run-as com.sln162.aerialhome cat /data/user_de/0/com.sln162.aerialhome/files/rescue.log
 ```
-
-## Building
-
-Change `versionCode` / `versionName` in `app/build.gradle`, then either `python build.py` locally or the `build-apk` job in Actions.

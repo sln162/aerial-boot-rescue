@@ -97,6 +97,18 @@ settings put secure accessibility_enabled 1
 
 `pm grant` 不是可选项：极米在解锁那一刻会重写无障碍列表，把第三方服务剔掉，没有这个权限服务写不回去。
 
+## 怎么更新
+
+覆盖安装就行，不用卸载、不用重新授权：
+
+```
+adb install -r AerialHome-<新版本>.apk
+```
+
+装完打开应用，看「运行状态」是不是绿色「正常」。不是的话，把无障碍开关关一下再开——极米解锁时会重写无障碍列表，服务自己会补回去，补不回来才需要手动开一次。
+
+日志里有 `bound, uptime=` 一行，就说明服务已经被系统绑上了。
+
 ## 界面看什么
 
 | 区块 | 内容 |
@@ -128,7 +140,3 @@ settings put secure accessibility_enabled 1
 ```
 adb shell run-as com.sln162.aerialhome cat /data/user_de/0/com.sln162.aerialhome/files/rescue.log
 ```
-
-## 构建
-
-改动版本号在 `app/build.gradle` 的 `versionCode` / `versionName`，本地 `python build.py` 或 Actions 的 `build-apk` 打包。

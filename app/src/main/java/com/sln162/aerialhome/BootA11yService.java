@@ -149,16 +149,11 @@ public class BootA11yService extends AccessibilityService {
         try {
             // 重绑时会新建服务对象，旧对象的观察者还挂在系统上：不摘掉就两个一起回调，
             // 同一次列表变更被处理两遍（实测同一次变更出现两条 "a11y list changed"，
-            // 相隔 6~62 毫秒），ensureSelf 也跟着多跑一遍。先摘后挂。
-            if (observer != null) {
-                try {
-                    getContentResolver().unregisterContentObserver(observer);
-                } catch (Throwable ignored) {
-                }
-                observer = null;
-            }
+            // 相隔 6~62 毫秒），ensureSelf 也跟着多跑一遍。
+            // 次序很重要：先挂新的、成功了再摘旧的——反过来一旦新注册抛异常，
+            // 旧的那条已经摘掉，就真的没人盯着列表了（极米改写列表时再没人补回来）。
             ContentResolver cr = getContentResolver();
-            observer = new ContentObserver(handler) {
+            ContentObserver next = new ContentObserver(handler) {
                 @Override
                 public void onChange(boolean selfChange) {
                     if (WRITING) {
@@ -172,7 +167,15 @@ public class BootA11yService extends AccessibilityService {
             };
             cr.registerContentObserver(
                     Settings.Secure.getUriFor(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES),
-                    false, observer);
+                    false, next);
+            if (observer != null) {
+                try {
+                    cr.unregisterContentObserver(observer);
+                } catch (Throwable ignored) {
+                }
+                log("a11y watch: old observer let go");
+            }
+            observer = next;
         } catch (Throwable t) {
             log("watch failed: " + t);
         }
