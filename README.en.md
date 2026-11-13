@@ -1,4 +1,4 @@
-[中文](README.md) | [English](README.en.md) | [Project page](https://sln162.github.io/aerial-home/)
+[中文](README.md) | [English](README.en.md)
 
 # Aerial Home Direct
 
