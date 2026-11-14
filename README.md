@@ -1,6 +1,4 @@
-[中文](README.md) | [English](README.en.md)
-
-# Aerial 守护（极米 / Android 9）
+# Aerial 主页直达
 
 **给 Aerial 兜底：开机黑屏、关机再开或睡醒的第一帧落在极米桌面时，把它请回来。按主页键的「用哪个桌面」弹框，Aerial 1.97 起已经自己能处理，这个服务从那时起不再插手。**
 
