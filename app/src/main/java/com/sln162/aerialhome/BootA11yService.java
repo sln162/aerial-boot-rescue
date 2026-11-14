@@ -875,12 +875,57 @@ public class BootA11yService extends AccessibilityService {
      * 所以先点中 Aerial 那一行（按钮随即变亮），再点"仅此一次"——弹框自己 finish 并启动 Aerial，
      * 不写任何首选记录。两条都走不通时退化到点"取消"（它本身就等价于对这个窗口按返回）。
      * 必须抢在被 Aerial 盖住之前动手：一旦盖住，getWindows() 里就看不到这个弹框了。
+     *
+     * 1.9.26 的出场判断：Aerial ≥ 1.97 自己会发 BACK 关这个框（#1523），这条路上我们一步都不做——
+     * 不点，也不读窗口列表：读取会落到那个"窗口在、焦点在、但什么都没画"的框上，
+     * 它本来就不响应，我们多碰一次只会让自己更难堪，没有半点好处。
+     * Aerial < 1.97 不会关这个框，仍照 1.9.22 原样立刻点。
      */
-    private void killChooser(String who, long eventAt) {
+    private void killChooser(final String who, final long eventAt) {
         if (handler == null) {
             return;
         }
+        if (aerialClosesChooser()) {
+            log("chooser seen (" + who + "), aerial handles it itself, stay out");
+            return;
+        }
+        log("chooser seen (" + who + "), aerial too old for this, run our chain");
         handler.post(new Probe(who, eventAt, 0));
+    }
+
+    /** 缓存：Aerial 是不是已经带 #1523（1.97 起） */
+    private Boolean aerialHasBack = null;
+
+    /** 查 Aerial 自己的版本号决定谁出场；查不到就当我们上（老版本来收框） */
+    private boolean aerialClosesChooser() {
+        if (aerialHasBack != null) {
+            return aerialHasBack;
+        }
+        boolean ok = false;
+        try {
+            String vn = getPackageManager().getPackageInfo(AERIAL_PKG, 0).versionName;
+            ok = versionAtLeast(vn, 1, 97);
+            log("aerial version " + vn + " -> " + (ok ? "stand down" : "we handle the chooser"));
+        } catch (Throwable t) {
+            log("aerial version unknown: " + t);
+        }
+        aerialHasBack = ok;
+        return ok;
+    }
+
+    /** 只按数字比：1.97 / 1.97.0 / 1.98 都算 >= 1.97 */
+    private static boolean versionAtLeast(String vn, int major, int minor) {
+        if (vn == null) {
+            return false;
+        }
+        try {
+            String[] parts = vn.split("\\.");
+            int a = Integer.parseInt(parts[0].replaceAll("[^0-9]", ""));
+            int b = parts.length > 1 ? Integer.parseInt(parts[1].replaceAll("[^0-9]", "")) : 0;
+            return a > major || (a == major && b >= minor);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private final class Probe implements Runnable {
@@ -1568,6 +1613,23 @@ public class BootA11yService extends AccessibilityService {
                 } finally {
                     out.close();
                 }
+            }
+            // 同一行再镜像到外部目录：这机器 logd 是停的，logcat 读不到，adb 只能 tail 这里
+            try {
+                File ext = context.getExternalFilesDir(null);
+                if (ext != null) {
+                    File ef = new File(ext, "rescue-ext.log");
+                    if (ef.exists() && ef.length() > LOG_MAX_BYTES) {
+                        ef.delete();
+                    }
+                    FileOutputStream eo = new FileOutputStream(ef, true);
+                    try {
+                        eo.write(line.getBytes("UTF-8"));
+                    } finally {
+                        eo.close();
+                    }
+                }
+            } catch (Throwable ignored) {
             }
         } catch (Throwable ignored) {
         }
